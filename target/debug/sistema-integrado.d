@@ -1,0 +1,1 @@
+/home/nicolas/Escritorio/Curso_Rust/arquitectura-cpu-rust/target/debug/sistema-integrado: /home/nicolas/Escritorio/Curso_Rust/arquitectura-cpu-rust/cache-controller/src/lib.rs /home/nicolas/Escritorio/Curso_Rust/arquitectura-cpu-rust/cpu-pipeline/src/lib.rs /home/nicolas/Escritorio/Curso_Rust/arquitectura-cpu-rust/sistema-integrado/src/main.rs

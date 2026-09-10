@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "cpu-pipeline",
+    "cache-controller",
+    "sistema-integrado",
+]
