@@ -2,32 +2,6 @@
 
 > Simulación de una CPU de 5 etapas con pipeline, forwarding y detección de hazards, implementada en Rust.
 
----
-
-## Tabla de Contenidos
-
-- [1. Contexto y Objetivo](#1-contexto-y-objetivo)
-- [2. Estructuras de Datos](#2-estructuras-de-datos)
-- [3. Algoritmo de Flujo: Hazards, Forwarding y Ciclo de Reloj](#3-algoritmo-de-flujo-hazards-forwarding-y-ciclo-de-reloj)
-  - [3.1 detectar_load_use_hazard](#31-detectar_load_use_hazard)
-  - [3.2 calcular_forwarding](#32-calcular_forwarding)
-  - [3.3 resolver_operando](#33-resolver_operando)
-  - [3.4 ejecutar_alu](#34-ejecutar_alu)
-  - [3.5 ejecutar_mem](#35-ejecutar_mem)
-  - [3.6 ejecutar_writeback](#36-ejecutar_writeback)
-  - [3.7 ciclo_reloj](#37-ciclo_reloj)
-  - [3.8 Diagrama Temporal: Load-Use Hazard con Stall y Forwarding](#38-diagrama-temporal-load-use-hazard-con-stall-y-forwarding)
-  - [3.9 Diagrama de Flujo General de ciclo_reloj](#39-diagrama-de-flujo-general-de-ciclo_reloj)
-  - [3.10 Trait Display](#310-trait-display)
-- [4. Decisiones de Diseño y su Justificación](#4-decisiones-de-diseño-y-su-justificación)
-- [5. API Pública](#5-api-pública)
-- [6. Suite de Tests](#6-suite-de-tests)
-- [7. Errores Comunes al Implementar (Gotchas)](#7-errores-comunes-al-implementar-gotchas)
-- [8. Estructura de Archivos del Crate](#8-estructura-de-archivos-del-crate)
-- [9. Integración con el Controlador de Caché (Proyecto 2)](#9-integración-con-el-controlador-de-caché-proyecto-2)
-- [10. Roadmap / Pendiente](#10-roadmap--pendiente)
-
----
 
 ## 1. Contexto y Objetivo
 
