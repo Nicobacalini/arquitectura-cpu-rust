@@ -1,0 +1,3 @@
+# Excluir build artifacts de las estadisticas de lenguaje de GitHub
+target/** linguist-vendored
+*.d linguist-vendored
