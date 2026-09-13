@@ -29,7 +29,7 @@ El objetivo de este proyecto (`sistema-integrado`) es **unir ambos subsistemas e
 │                    CONTROLADOR DE MEMORIA CACHÉ                         │
 │                                                                         │
 │   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │ CACHÉ L1 ASOCIATIVA POR CONJUNTOS (4 Sets × 2 Vías = 32 bytes)   │   │
+│   │ CACHÉ L1 ASOCIATIVA POR CONJUNTOS (4 Sets × 2 Vías = 32 bytes)  │   │
 │   │ Política: Write-Back, Write-Allocate, Reemplazo LRU             │   │
 │   └────────────────────────────────┬────────────────────────────────┘   │
 │                                    │                                    │
