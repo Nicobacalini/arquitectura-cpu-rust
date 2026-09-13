@@ -167,19 +167,20 @@ arquitectura-cpu-rust/
 │       └── main.rs                  # Binario de demo: instancia una CPU y corre un programa
 │       └── tests.rs                 # tests de ejemplo importando todo desde cpu_pipeline::*
 │
-├── cache-controller/                # Crate: Controlador de memoria caché (pendiente — Proyecto 2)
+├── cache-controller/
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs                   # Definición de la estructura CacheController (pendiente)
-│       ├── storage.rs               # Representación de líneas, bloques y tags (pendiente)
-│       ├── policy.rs                # Políticas de reemplazo (LRU/FIFO) y escritura (pendiente)
-│       └── bus.rs                   # Interfaz de bus de memoria y penalizaciones (pendiente)
-│
-└── sistema-integrado/               # Crate ejecutable: Integración final y driver (pendiente — Integración)
+│       ├── lib.rs                   # Definición de la estructura CacheController
+│       ├── storage.rs               # Representación de líneas, bloques y tags
+│       ├── policy.rs                # Políticas de reemplazo (LRU/FIFO) y escritura
+│       ├── bus.rs                   # Interfaz de bus de memoria y penalizaciones
+│       └── tests.rs                 # tests de ejemplo
+│       └── main.rs                  
+└── sistema-integrado/               # Crate ejecutable: Integración final y driver 
     ├── Cargo.toml
     └── src/
-        ├── main.rs                  # Bucle de simulación ciclo a ciclo (pendiente)
-        └── display.rs               # Visualizador en consola del estado del pipeline (pendiente)
+        ├── main.rs                  # Bucle de simulación ciclo a ciclo
+        └── display.rs               # Visualizador en consola del estado del pipeline (faltan algunas cosas)
 ```
 
 ---
