@@ -220,7 +220,7 @@ pub struct ControladorMemoria {
 
 Con **Write-Back**, una escritura solo modifica la caché (marcando `dirty_bit = true`); el dato se propaga a la RAM únicamente cuando la línea se desaloja (o se sincroniza explícitamente con `flush()`). Con **Write-Through**, cada escritura iría inmediatamente tanto a la caché como a la RAM.
 
-**Por qué elegimos Write-Back:** reduce drásticamente el tráfico hacia la RAM en programas con múltiples escrituras sobre la misma dirección en un período corto (ej. un contador que se incrementa en un loop) — cada incremento intermedio nunca llega a tocar la RAM, solo el valor final, en el momento del desalojo.
+**Por qué elegimos Write-Back:** porque reduce drásticamente el tráfico hacia la RAM en programas con múltiples escrituras sobre la misma dirección en un período corto (ej. un contador que se incrementa en un loop) — cada incremento intermedio nunca llega a tocar la RAM, solo el valor final, en el momento del desalojo.
 
 **Costo aceptado:** si el sistema pierde energía o crashea con líneas `dirty` sin sincronizar, esos datos se pierden. Es el trade-off clásico velocidad-vs-durabilidad — el mismo motivo por el que sistemas de archivos reales usan *journaling* o *fsync* explícitos en puntos críticos (nuestro equivalente es `flush()`).
 
@@ -319,11 +319,3 @@ cache-controller/
     ├── bus.rs         # leer_byte, escribir_byte, flush (API pública de acceso)
     └── tests.rs       # 15 tests (`#[cfg(test)] mod tests;` declarado en lib.rs)
 ```
-
-
-## 10. Integración Pendiente con el Proyecto 1
-
-Este controlador será consumido por `CpuSegmentada::ejecutar_mem` (`cpu-pipeline`) reemplazando la actual `MemoriaProvisoria`. Cuando esa integración esté lista:
-
-- `cpu-pipeline/Cargo.toml` va a declarar `cache-controller = { path = "../cache-controller" }`.
-- El binario final (`sistema-integrado`) va a poder imprimir, al terminar la ejecución de un programa, tanto la traza del pipeline como las estadísticas de esta caché en un único reporte combinado (Tarea 3.2 del TP).

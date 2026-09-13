@@ -46,20 +46,12 @@ pub enum Instruccion {
         src2: Registro,
     },
     /// Lee un byte de la RAM en `direccion_ram` y lo guarda en `dest`.
-    LOAD {
-        dest: Registro,
-        direccion_ram: u8,
-    },
+    LOAD { dest: Registro, direccion_ram: u8 },
     /// Escribe el byte del registro `src` en la RAM en `direccion_ram`.
-    STORE {
-        src: Registro,
-        direccion_ram: u8,
-    },
+    STORE { src: Registro, direccion_ram: u8 },
     /// Salta incondicionalmente a la instruccion en `direccion_destino`.
     /// Flushea las dos instrucciones especulativas que estaban en IF/ID e ID/EX.
-    JUMP {
-        direccion_destino: usize,
-    },
+    JUMP { direccion_destino: usize },
 }
 
 // ─── Registros de segmentacion ───────────────────────────────────────────────
@@ -396,7 +388,10 @@ impl fmt::Display for Instruccion {
             Instruccion::SUB { dest, src1, src2 } => {
                 write!(f, "SUB {:?},{:?},{:?}", dest, src1, src2)
             }
-            Instruccion::LOAD { dest, direccion_ram } => {
+            Instruccion::LOAD {
+                dest,
+                direccion_ram,
+            } => {
                 write!(f, "LOAD {:?},0x{:02X}", dest, direccion_ram)
             }
             Instruccion::STORE { src, direccion_ram } => {

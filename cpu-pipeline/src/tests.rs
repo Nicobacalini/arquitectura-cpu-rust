@@ -114,8 +114,7 @@ fn test_forwarding_ex_mem_tiene_prioridad() {
     }
     assert_eq!(cpu.registros[1], 15, "R1 final debe ser 15");
     assert_eq!(
-        cpu.registros[3],
-        15,
+        cpu.registros[3], 15,
         "R3 debe haber tomado el valor de EX/MEM (15), no el de MEM/WB (10)"
     );
 }
@@ -429,7 +428,10 @@ fn test_load_use_hazard_con_sub() {
     }
 
     assert_eq!(cpu.registros[1], 30, "LOAD debe haber escrito 30 en R1");
-    assert_eq!(cpu.registros[3], 20, "SUB debe haber calculado 30 - 10 = 20");
+    assert_eq!(
+        cpu.registros[3], 20,
+        "SUB debe haber calculado 30 - 10 = 20"
+    );
 }
 
 #[test]
@@ -518,8 +520,7 @@ fn test_jump_con_flush_de_instrucciones_especulativas() {
     }
 
     assert_eq!(
-        cpu.registros[1],
-        10,
+        cpu.registros[1], 10,
         "Instrucciones intermedias debieron descartarse"
     );
     assert_eq!(cpu.registros[2], 10, "R2 debe recibir R1 tras el JUMP");
@@ -547,7 +548,9 @@ fn test_jump_a_inicio_del_programa() {
             src1: Registro::R2, // R2 = 99, R3 = 0 -> resultado seria 99
             src2: Registro::R3,
         },
-        Instruccion::JUMP { direccion_destino: 0 },
+        Instruccion::JUMP {
+            direccion_destino: 0,
+        },
     ];
     cpu.registros[2] = 99; // Si ADD llega a WB, R1 seria 99
 
@@ -573,11 +576,7 @@ fn test_pipeline_nop_no_modifica_registros() {
     cpu.registros[2] = 200;
     cpu.registros[3] = 300;
 
-    let programa = vec![
-        Instruccion::NOP,
-        Instruccion::NOP,
-        Instruccion::NOP,
-    ];
+    let programa = vec![Instruccion::NOP, Instruccion::NOP, Instruccion::NOP];
     let mut mem = MemoriaProvisoria::new();
 
     for _ in 0..8 {
@@ -777,7 +776,9 @@ fn test_hazard_load_seguido_de_jump_no_detecta_stall() {
         activa: true,
         resultado: None,
     };
-    let siguiente = Instruccion::JUMP { direccion_destino: 5 };
+    let siguiente = Instruccion::JUMP {
+        direccion_destino: 5,
+    };
     assert!(!cpu.detectar_load_use_hazard(&siguiente));
 }
 
@@ -895,5 +896,8 @@ fn test_display_cpu_muestra_contador_actualizado() {
     }
 
     let s = format!("{}", cpu);
-    assert!(s.contains("Ciclo 3"), "Display debe mostrar el ciclo actual");
+    assert!(
+        s.contains("Ciclo 3"),
+        "Display debe mostrar el ciclo actual"
+    );
 }
