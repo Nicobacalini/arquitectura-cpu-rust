@@ -237,10 +237,10 @@ La solución es procesar en **orden inverso a la ruta de datos** (WB → MEM →
 ```
 1. WB     →  ejecutar_writeback()           consolida mem_wb en el banco de registros
 2. MEM    →  nuevo_mem_wb = ejecutar_mem()  resultado guardado en variable temporal
-3. Hazard →  detectar_load_use_hazard()     inspecciona if_id vs id_ex
-4. JUMP   →  inspecciona id_ex              guarda el destino si hay salto
+3. Hazards → detectar_load_use_hazard()     inspecciona if_id vs id_ex
+              inspecciona id_ex             guarda destino si hay JUMP
              ╔══════════════════════════════════╗
-5. Branch    ║  JUMP > Stall > Normal           ║
+4. Avance    ║  JUMP > Stall > Normal           ║
              ╠══════════════════════════════════╣
              ║ JUMP:   flush if_id + id_ex      ║
              ║         PC = dir_destino         ║
@@ -254,8 +254,8 @@ La solución es procesar en **orden inverso a la ruta de datos** (WB → MEM →
              ║         if_id  = Fetch(PC)       ║
              ║         PC    += 1               ║
              ╚══════════════════════════════════╝
-6. mem_wb = nuevo_mem_wb
-7. contador_ciclos += 1
+5. mem_wb = nuevo_mem_wb
+6. contador_ciclos += 1
 ```
 
 #### Mecánica del JUMP — Branch Penalty
@@ -312,13 +312,9 @@ La tabla muestra el estado de los registros de segmentación **al final de cada 
                     │ 2. nuevo_mem_wb = ejecutar_mem │  <-- ex_mem -> RAM
                     └────────────────┬───────────────┘
                                      │
-                         ┌───────────▼───────────┐
-                         │ 3. Detectar hazard    │  <-- if_id vs id_ex
-                         └───────────┬───────────┘
-                                     │
-                         ┌───────────▼───────────┐
-                         │ 4. Detectar JUMP      │  <-- id_ex
-                         └───────────┬───────────┘
+                    ┌────────────────▼───────────────┐
+                    │ 3. Detectar hazard y JUMP      │  <-- if_id vs id_ex
+                    └────────────────┬───────────────┘
                                      │
               ┌──────────────────────┼───────────────────────┐
               │                      │                        │
@@ -332,11 +328,11 @@ La tabla muestra el estado de los registros de segmentación **al final de cada 
               └──────────────────────┼───────────────────────┘
                                      │
                          ┌───────────▼───────────┐
-                         │ 6. mem_wb = nuevo     │
+                         │ 5. mem_wb = nuevo     │
                          └───────────┬───────────┘
                                      │
                          ┌───────────▼───────────┐
-                         │ 7. contador_ciclos++  │
+                         │ 6. contador_ciclos++  │
                          └───────────────────────┘
 ```
 
@@ -541,7 +537,7 @@ cargo test --package cpu-pipeline
 | **Contador de ciclos** | 1 | Avanza exactamente 1 por ciclo |
 | **Display** | 4 | Formato de cada instrucción, registro activo vs inactivo, CPU con ciclo 0, CPU con ciclo N |
 
-**Resultado:** `36 passed; 0 failed` ✅
+**Resultado:** `36 passed; 0 failed`
 
 ---
 

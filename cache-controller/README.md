@@ -263,17 +263,42 @@ impl EstadisticasCache {
 }
 ```
 
-## 7. Tests Obligatorios
+## 7. Tests
 
-| # | Test | Qué verifica |
+El crate cuenta con **15 tests** en `src/tests.rs`, verificados de punta a punta (`rustc --test` sobre el código real):
+
+```
+running 15 tests
+test tests::test_controlador_nuevo ... ok
+test tests::test_decodificar_direccion ... ok
+test tests::test_flush_sincroniza_sin_invalidar ... ok
+test tests::test_lru_desaloja_la_correcta ... ok
+test tests::test_miss_con_via_dirty_hace_writeback ... ok
+test tests::test_miss_con_via_valida_limpia_no_hace_writeback ... ok
+test tests::test_miss_en_via_invalida_carga_datos ... ok
+test tests::test_miss_luego_hit ... ok
+test tests::test_offset_correcto ... ok
+test tests::test_preferencia_via_libre_sobre_lru ... ok
+test tests::test_reconstruir_direccion_base ... ok
+test tests::test_tasa_de_aciertos ... ok
+test tests::test_via_victima_con_via_invalida ... ok
+test tests::test_via_victima_lru ... ok
+test tests::test_write_back_al_desalojar ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+| Categoría | Tests | Qué verifican |
 |---|---|---|
-| 1 | `test_miss_luego_hit` | Primer acceso a una dirección es miss; el segundo acceso a la misma dirección es hit. |
-| 2 | `test_write_back_al_desalojar` | Un byte escrito (dirty) no llega a RAM hasta que su línea es desalojada. |
-| 3 | `test_lru_desaloja_la_correcta` | Con las 2 vías ocupadas, refrescar una de ellas evita que sea la elegida como víctima. |
-| 4 | `test_offset_correcto` | Escribir los 4 bytes de un mismo bloque en offsets distintos no los pisa entre sí. |
-| 5 | `test_preferencia_via_libre_sobre_lru` | Con una vía libre y otra ocupada, la ocupada nunca se desaloja aunque tenga menor `ultimo_acceso` numérico que cero. |
-| 6 | `test_tasa_de_aciertos` | Con una secuencia conocida de hits/misses, `tasa_de_aciertos()` devuelve el porcentaje correcto. |
-| 7 *(extensión)* | `test_flush_sincroniza_sin_invalidar` | Tras `flush()`, la RAM queda actualizada y la línea sigue válida en caché (no se invalida). |
+| **Unitarios internos ("caja blanca")** | 8 | `decodificar_direccion`, `reconstruir_direccion_base`, `elegir_via_victima` (LRU y vía libre), `manejar_miss` (carga simple, desalojo limpio, desalojo dirty) llamados directamente, sin pasar por `leer_byte`/`escribir_byte` |
+| **Obligatorios (API pública)** | 6 | `test_miss_luego_hit`, `test_write_back_al_desalojar`, `test_lru_desaloja_la_correcta`, `test_offset_correcto`, `test_preferencia_via_libre_sobre_lru`, `test_tasa_de_aciertos` |
+| **Extensión (Tarea 3.1)** | 1 | `test_flush_sincroniza_sin_invalidar` |
+
+Correr la suite:
+```bash
+cargo test --package cache-controller
+```
+
 
 ## 8. Errores Comunes al Implementar (Gotchas)
 
@@ -287,12 +312,14 @@ impl EstadisticasCache {
 cache-controller/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs        # re-exports públicos
+    ├── lib.rs        # re-exports públicos + `mod tests;`
     ├── storage.rs     # LineaCache, ConjuntoCache, ControladorMemoria (campos),
     │                  # decodificar_direccion, reconstruir_direccion_base, buscar_via_hit
     ├── policy.rs      # elegir_via_victima, manejar_miss, EstadisticasCache + tasa_de_aciertos
-    └── bus.rs         # leer_byte, escribir_byte, flush (API pública de acceso)
+    ├── bus.rs         # leer_byte, escribir_byte, flush (API pública de acceso)
+    └── tests.rs       # 15 tests (`#[cfg(test)] mod tests;` declarado en lib.rs)
 ```
+
 
 ## 10. Integración Pendiente con el Proyecto 1
 

@@ -2,9 +2,8 @@
 /// Toda la logica real vive en lib.rs y es accesible como `cpu_pipeline::*`.
 /// Inicializa una CPU con registros de ejemplo, ejecuta un programa de dos
 /// instrucciones y muestra el estado del pipeline ciclo a ciclo.
-use cpu_pipeline::{
-    CpuSegmentada, Instruccion, MemoriaProvisoria, Registro, RegistroSegmentacion,
-};
+use cache_controller::ControladorMemoria;
+use cpu_pipeline::{CpuSegmentada, Instruccion, Registro, RegistroSegmentacion};
 
 fn main() {
     let burbuja = RegistroSegmentacion {
@@ -40,7 +39,7 @@ fn main() {
         },
     ];
 
-    let mut memoria = MemoriaProvisoria::new();
+    let mut memoria = ControladorMemoria::nuevo();
 
     println!("=== Demo pipeline cpu-pipeline ===\n");
     for _ in 0..7 {

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["Instruccion","Registro"],"struct":["CpuSegmentada","MemoriaProvisoria","RegistroSegmentacion"]};

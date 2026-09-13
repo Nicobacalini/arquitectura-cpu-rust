@@ -1,53 +1,20 @@
 use std::fmt;
 
+use cache_controller::ControladorMemoria;
+
 // ─── Memoria ────────────────────────────────────────────────────────────────
+// `ControladorMemoria` (re-exportado desde el crate `cache-controller`) actua
+// como la memoria del pipeline: cada LOAD/STORE pasa por la cache asociativa
+// de 4 conjuntos x 2 vias con politica LRU y Write-Back/Write-Allocate.
+// Se re-exporta aqui para que los binarios que consumen `cpu-pipeline` no
+// necesiten depender de `cache-controller` directamente.
+pub use cache_controller::ControladorMemoria as Memoria;
 
-/// Memoria RAM principal de la CPU simulada.
-///
-/// Arreglo contiguo de 256 bytes direccionables individualmente
-/// mediante un indice `u8` (0x00 a 0xFF).
-/// En una implementacion completa seria reemplazada por un
-/// controlador de cache real.
-pub struct MemoriaProvisoria {
-    /// Arreglo de 256 bytes que representa la memoria fisica.
-    pub ram: [u8; 256],
-}
-
-impl MemoriaProvisoria {
-    /// Crea una nueva instancia de `MemoriaProvisoria` con todos
-    /// los bytes inicializados a `0`.
-    pub fn new() -> Self {
-        Self { ram: [0; 256] }
-    }
-
-    /// Lee y devuelve el byte almacenado en la `direccion` indicada.
-    ///
-    /// # Parametros
-    /// - `direccion`: direccion de memoria de 8 bits (rango: `0x00`..`0xFF`).
-    ///
-    /// # Retorna
-    /// El byte almacenado en esa posicion.
-    pub fn leer_byte(&self, direccion: u8) -> u8 {
-        self.ram[direccion as usize]
-    }
-
-    /// Escribe `dato` en la posicion de memoria indicada por `direccion`.
-    ///
-    /// # Parametros
-    /// - `direccion`: direccion de memoria de 8 bits (rango: `0x00`..`0xFF`).
-    /// - `dato`: el byte a almacenar.
-    pub fn escribir_byte(&mut self, direccion: u8, dato: u8) {
-        self.ram[direccion as usize] = dato;
-    }
-}
-
-/// Implementacion del trait `Default` para `MemoriaProvisoria`.
-/// Equivalente a llamar a `MemoriaProvisoria::new()`.
-impl Default for MemoriaProvisoria {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Alias de compatibilidad: apunta al [`ControladorMemoria`] real del crate
+/// `cache-controller`. Todo codigo existente que use `MemoriaProvisoria`
+/// pasa ahora por la cache asociativa (LRU, Write-Back) en lugar de acceder
+/// directamente a la RAM.
+pub type MemoriaProvisoria = ControladorMemoria;
 
 // ─── ISA ────────────────────────────────────────────────────────────────────
 
@@ -300,7 +267,7 @@ impl CpuSegmentada {
     pub fn ejecutar_mem(
         &self,
         instruccion: RegistroSegmentacion,
-        memoria: &mut MemoriaProvisoria,
+        memoria: &mut ControladorMemoria,
     ) -> RegistroSegmentacion {
         if !instruccion.activa {
             return instruccion;
@@ -355,16 +322,16 @@ impl CpuSegmentada {
     /// Avanza el pipeline un ciclo de reloj completo.
     ///
     /// Orden de evaluacion en cada ciclo (evita RAW ocultos):
-    /// 1. WB  — escribe `mem_wb` en el banco de registros.
-    /// 2. MEM — procesa `ex_mem` y genera el nuevo valor de `mem_wb`.
-    /// 3. Deteccion de hazards — Load-Use y JUMP.
+    /// 1. WB  - escribe `mem_wb` en el banco de registros.
+    /// 2. MEM - procesa `ex_mem` y genera el nuevo valor de `mem_wb`.
+    /// 3. Deteccion de hazards - Load-Use y JUMP.
     /// 4. Avance de etapas:
     ///    - JUMP en EX: flushea IF/ID e ID/EX, redirige el PC.
     ///    - Load-Use stall: inserta burbuja en ID/EX, congela IF/ID y el PC.
     ///    - Normal: avanza todas las etapas y busca la proxima instruccion.
     /// 5. Actualiza `mem_wb` con el resultado de MEM.
     /// 6. Incrementa `contador_ciclos`.
-    pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut MemoriaProvisoria) {
+    pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut ControladorMemoria) {
         self.ejecutar_writeback();
 
         let nuevo_mem_wb = self.ejecutar_mem(self.ex_mem, memoria);
