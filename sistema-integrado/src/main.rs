@@ -1,25 +1,22 @@
+mod display;
+
 use cache_controller::ControladorMemoria;
-use cpu_pipeline::{CpuSegmentada, Instruccion, Registro, RegistroSegmentacion};
+use cpu_pipeline::{CpuSegmentada, Instruccion, Registro};
+use display::reporte_rendimiento;
 
 fn main() {
     println!("============================================================");
     println!("     Simulador Integrado: CPU Segmentada + Memoria Cache    ");
     println!("============================================================\n");
 
-    let burbuja = RegistroSegmentacion {
-        instruccion: Instruccion::NOP,
-        activa: false,
-        resultado: None,
-    };
-
+    // Inicialización de la CPU utilizando la sintaxis de actualización de Rust (..):
+    // Solo especificamos los campos que deseamos personalizar (en este caso, precargar R2 = 10),
+    // mientras que `..CpuSegmentada::nueva()` rellena automáticamente todo el estado de stock
+    // (los 4 buffers del pipeline como burbujas NOP inactivas, PC en 0 y contadores en 0).
+    // Ventaja: si en el futuro se agregan más campos a CpuSegmentada, este código nunca se romperá.
     let mut cpu = CpuSegmentada {
-        if_id: burbuja,
-        id_ex: burbuja,
-        ex_mem: burbuja,
-        mem_wb: burbuja,
         registros: [0, 0, 10, 0], // R0=0, R1=0, R2=10, R3=0
-        program_counter: 0,
-        contador_ciclos: 0,
+        ..CpuSegmentada::nueva()
     };
 
     let mut memoria = ControladorMemoria::nuevo();
@@ -83,31 +80,5 @@ fn main() {
     // Sincronizar cache con RAM al finalizar
     memoria.flush();
 
-    println!("\n============================================================");
-    println!("                    Estado Final de la CPU                  ");
-    println!("============================================================");
-    println!("  Ciclos totales de CPU : {}", cpu.contador_ciclos);
-    println!("  Banco de registros    : {:?}", cpu.registros);
-    println!("    R0 = {} (hardwired zero)", cpu.registros[0]);
-    println!("    R1 = {}", cpu.registros[1]);
-    println!("    R2 = {}", cpu.registros[2]);
-    println!("    R3 = {}", cpu.registros[3]);
-
-    println!("\n============================================================");
-    println!("                    Estadisticas de Cache                   ");
-    println!("============================================================");
-    let total_accesos = memoria.estadisticas.hits + memoria.estadisticas.misses;
-    println!("  Hits            : {}", memoria.estadisticas.hits);
-    println!("  Misses          : {}", memoria.estadisticas.misses);
-    println!("  Total accesos   : {}", total_accesos);
-    println!(
-        "  Tasa de aciertos: {:.2}%",
-        memoria.estadisticas.tasa_de_aciertos() * 100.0
-    );
-    println!(
-        "  Desalojos dirty : {}",
-        memoria.estadisticas.desalojos_dirty
-    );
-    println!("  Ciclos de cache : {}", memoria.contador_ciclos);
-    println!("============================================================\n");
+    println!("{}", reporte_rendimiento(&cpu, &memoria, 100.0));
 }

@@ -94,6 +94,27 @@ memoria.flush();
 
 Esto garantiza que todas las líneas sucias sean volcadas a la memoria RAM sin invalidarlas, asegurando la consistencia física de la memoria.
 
+### 2.3 Módulo de Reporte y Métricas de Rendimiento (`display.rs`)
+
+Para mantener el principio de responsabilidad única y desacoplar la simulación del formateo y análisis de resultados, la lógica de presentación vive en [`src/display.rs`](src/display.rs) mediante la función:
+
+```rust
+pub fn reporte_rendimiento(
+    cpu: &CpuSegmentada,
+    mem: &ControladorMemoria,
+    frecuencia_mhz: f64,
+) -> String
+```
+
+Este módulo procesa los contadores internos de la CPU y de la memoria para derivar indicadores estándar de rendimiento:
+* **CPI (Ciclos por Instrucción):** Relación entre los ciclos totales del procesador y las instrucciones reales retiradas en la etapa WB.
+  $$\text{CPI} = \frac{\text{Ciclos Totales}}{\text{Instrucciones Completadas}}$$
+* **IPC (Instrucciones por Ciclo):** Inverso del CPI, representa el *throughput* efectivo de la CPU.
+  $$\text{IPC} = \frac{\text{Instrucciones Completadas}}{\text{Ciclos Totales}} = \frac{1}{\text{CPI}}$$
+* **Tiempo de Ejecución Estimado:** Proyectado a partir de una frecuencia de reloj configurable (en MHz):
+  $$T_{\text{ns}} = \left(\frac{\text{Ciclos Totales}}{f_{\text{MHz}} \times 10^6}\right) \times 10^9\text{ ns}$$
+* **Tasa de Aciertos de Caché (%):** Porcentaje de accesos a memoria resueltos directamente en la memoria caché L1 sin requerir acceso a RAM.
+
 ---
 
 ## 3. Programa de Demostración
@@ -132,7 +153,20 @@ let programa = vec![
 ];
 ```
 
-### Condiciones Iniciales:
+### Condiciones Iniciales e Inicialización Idiomática:
+
+La CPU se instancia utilizando la **sintaxis de actualización de Rust (`..`)**:
+
+```rust
+// Solo especificamos los campos que deseamos personalizar (precargar R2 = 10),
+// mientras que `..CpuSegmentada::nueva()` rellena todo el resto con el estado de stock
+// (los 4 buffers del pipeline en NOP inactivo, PC en 0, ciclos en 0 e instrucciones en 0):
+let mut cpu = CpuSegmentada {
+    registros: [0, 0, 10, 0], // R0=0, R1=0, R2=10, R3=0
+    ..CpuSegmentada::nueva()
+};
+```
+
 - **Banco de registros:** `R0 = 0` (fijo), `R1 = 0`, `R2 = 10`, `R3 = 0`.
 - **RAM:** `RAM[0x10] = 15`.
 - **Caché:** Completamente vacía (todas las líneas inválidas).
@@ -175,30 +209,47 @@ Ciclo 11 | IF/ID: -- | ID/EX: -- | EX/MEM: -- | MEM/WB: --
 
 ## 5. Reporte Final de Ejecución
 
-Al concluir el ciclo 11, el sistema emite el reporte consolidado de estado del procesador y métricas del subsistema de memoria:
+Al concluir el ciclo 11 y tras sincronizar la memoria con `memoria.flush()`, la función `reporte_rendimiento(&cpu, &memoria, 100.0)` emite el siguiente reporte consolidado:
 
 ```text
 ============================================================
                     Estado Final de la CPU                  
 ============================================================
-  Ciclos totales de CPU : 11
-  Banco de registros    : [0, 15, 25, 10]
+  Ciclos totales de CPU     : 11
+  Instrucciones completadas : 5
+  Banco de registros        : [0, 15, 25, 10]
     R0 = 0 (hardwired zero)
     R1 = 15
     R2 = 25
     R3 = 10
 
 ============================================================
+                   Metricas de Rendimiento                  
+============================================================
+  Frecuencia configurada    : 100.00 MHz
+  CPI (Ciclos / Instruccion): 2.20
+  IPC (Instrucciones / Ciclo): 0.45
+  Tiempo de ejecucion       : 110.00 ns (0.1100 µs)
+
+============================================================
                     Estadisticas de Cache                   
 ============================================================
-  Hits            : 1
-  Misses          : 2
-  Total accesos   : 3
-  Tasa de aciertos: 33.33%
-  Desalojos dirty : 0
-  Ciclos de cache : 3
+  Hits                      : 1
+  Misses                    : 2
+  Total accesos             : 3
+  Tasa de aciertos          : 33.33%
+  Desalojos dirty           : 0
+  Ciclos de cache           : 3
 ============================================================
 ```
+
+### Análisis de las Métricas de Rendimiento:
+* **CPI de 2.20:** En un pipeline ideal en régimen permanente sin hazards ni latencia de memoria, el CPI tendería a $1.00$. En este programa de prueba observamos un CPI de $2.20$ debido a:
+  1. **Latencia de arranque y drenado del pipeline:** Se requieren 4 ciclos para que la primera instrucción alcance Write Back y 2 ciclos adicionales de drenado tras la búsqueda de la última instrucción.
+  2. **Penalización por Load-Use Hazards:** Ocurrieron 2 stalls (ciclos 3 y 7) donde el procesador debió congelar el pipeline e inyectar burbujas NOP a la espera del dato en MEM.
+* **IPC de 0.45:** Refleja que en promedio se completaron 0.45 instrucciones útiles por ciclo de reloj ejecutado.
+* **Tiempo de Ejecución:** A una frecuencia nominal de 100 MHz (período de reloj de 10 ns):
+  $$T = 11 \times 10\text{ ns} = 110.00\text{ ns}\quad (0.1100\text{ }\mu\text{s})$$
 
 ### Verificación matemática de los registros:
 - **`R0` = 0:** Registro hardwired-zero inmutable.
@@ -234,11 +285,18 @@ Para compilar y ejecutar la simulación integrada:
 cargo run --package sistema-integrado --bin sistema-integrado
 ```
 
-Para verificar la integridad de todos los tests unitarios del espacio de trabajo completo (51 tests):
+Para verificar la integridad de todos los tests unitarios del espacio de trabajo completo (54 tests):
 
 ```bash
 cargo test --workspace
 ```
+
+| Crate | Tests | Cobertura |
+|---|---|---|
+| `cache-controller` | 15 | Políticas LRU, Write-Back, Write-Allocate, decodificación de direcciones |
+| `cpu-pipeline` | 38 | Forwarding, Load-Use hazards, saltos, `nueva()`, sintaxis de actualización, métricas (+1 doctest) |
+| `sistema-integrado` | 1 | Cálculo y formateo del reporte de rendimiento (CPI, IPC, tiempos, caché) |
+| **Total** | **54** | **100% pasando** |
 
 ---
 
@@ -249,5 +307,6 @@ sistema-integrado/
 ├── Cargo.toml       # Declara dependencias hacia cpu-pipeline y cache-controller
 ├── README.md        # Documentación de la arquitectura integrada y resultados
 └── src/
-    └── main.rs      # Binario demostrativo con simulación integrada paso a paso
+    ├── display.rs   # Módulo de formateo y cálculo de métricas de rendimiento (CPI, IPC, etc.)
+    └── main.rs      # Binario demostrativo con simulación integrada y reporte
 ```

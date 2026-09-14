@@ -104,9 +104,51 @@ pub struct CpuSegmentada {
 
     /// Total de ciclos de reloj ejecutados desde el inicio de la simulacion.
     pub contador_ciclos: u64,
+
+    /// Total de instrucciones completadas exitosamente (retiradas en Write Back).
+    pub instrucciones_completadas: u64,
 }
 
 impl CpuSegmentada {
+    /// Crea una nueva CPU segmentada en su estado inicial limpio (de stock):
+    /// - Los 4 registros de segmentacion (`if_id`, `id_ex`, `ex_mem`, `mem_wb`) como burbujas NOP inactivas.
+    /// - Banco de registros R0..R3 en 0.
+    /// - Contador de Programa (`program_counter`) en 0.
+    /// - `contador_ciclos` e `instrucciones_completadas` en 0.
+    ///
+    /// Puede usarse directamente o junto con la sintaxis de actualizacion de Rust (`..`):
+    /// ```rust
+    /// use cpu_pipeline::CpuSegmentada;
+    /// let cpu = CpuSegmentada {
+    ///     registros: [0, 0, 10, 0],
+    ///     ..CpuSegmentada::nueva()
+    /// };
+    /// ```
+    pub fn nueva() -> Self {
+        let burbuja = RegistroSegmentacion {
+            instruccion: Instruccion::NOP,
+            activa: false,
+            resultado: None,
+        };
+
+        Self {
+            if_id: burbuja,
+            id_ex: burbuja,
+            ex_mem: burbuja,
+            mem_wb: burbuja,
+            registros: [0; 4],
+            program_counter: 0,
+            contador_ciclos: 0,
+            instrucciones_completadas: 0,
+        }
+    }
+
+    /// Alias idiomatico en ingles para [`CpuSegmentada::nueva`].
+    #[inline]
+    pub fn new() -> Self {
+        Self::nueva()
+    }
+
     /// Detecta si existe un Load-Use Hazard entre la instruccion en ID y el LOAD en EX.
     ///
     /// Retorna `true` cuando la instruccion en `id_ex` es un LOAD activo y la instruccion
@@ -295,6 +337,8 @@ impl CpuSegmentada {
             return;
         }
 
+        self.instrucciones_completadas += 1;
+
         if let Some(valor) = self.mem_wb.resultado {
             match self.mem_wb.instruccion {
                 Instruccion::ADD { dest, .. }
@@ -426,6 +470,12 @@ impl fmt::Display for CpuSegmentada {
             "Ciclo {} | IF/ID: {} | ID/EX: {} | EX/MEM: {} | MEM/WB: {}",
             self.contador_ciclos, self.if_id, self.id_ex, self.ex_mem, self.mem_wb
         )
+    }
+}
+
+impl Default for CpuSegmentada {
+    fn default() -> Self {
+        Self::nueva()
     }
 }
 

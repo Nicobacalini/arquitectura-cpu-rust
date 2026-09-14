@@ -99,6 +99,7 @@ pub struct CpuSegmentada {
     pub registros:       [u16; 4],             // Banco R0..R3
     pub program_counter: usize,                // Índice de la próx. instrucción
     pub contador_ciclos: u64,                  // Ciclos transcurridos
+    pub instrucciones_completadas: u64,        // Instrucciones completadas (retiradas en WB)
 }
 ```
 
@@ -214,6 +215,7 @@ pub fn ejecutar_writeback(&mut self)
 
 Ejecuta la etapa **WB (Write Back)** usando el registro `mem_wb`:
 
+- Si `mem_wb.activa` es `true`, incrementa `self.instrucciones_completadas += 1` (contabiliza solo instrucciones reales que completan el pipeline, ignorando burbujas).
 - `ADD`, `SUB`, `LOAD` con `dest != R0`: escribe `resultado` en `registros[dest]`.
 - **R0**: la escritura se descarta silenciosamente (hardwired-zero).
 - `STORE`, `NOP`, registro inactivo: no modifica el banco.
@@ -324,7 +326,7 @@ La tabla muestra el estado de los registros de segmentación **al final de cada 
    id_ex=burbuja            id_ex=burbuja            id_ex=if_id
    if_id=burbuja            (if_id y PC congelados)  if_id=Fetch(PC)
    PC=dir_destino                                    PC+=1
-              │                      │                        │
+              │                      │                       │
               └──────────────────────┼───────────────────────┘
                                      │
                          ┌───────────▼───────────┐
@@ -534,10 +536,10 @@ cargo test --package cpu-pipeline
 | **Aritmética** | 2 | ADD+SUB sin hazards, overflow wrapping u16 |
 | **LOAD/STORE** | 2 | Round-trip STORE→LOAD, STORE con forwarding desde EX |
 | **Pipeline NOP / vacío** | 2 | NOPs no modifican registros, programa vacío es estable |
-| **Contador de ciclos** | 1 | Avanza exactamente 1 por ciclo |
+| **Contador de ciclos y métricas** | 2 | Avanza exactamente 1 por ciclo, contabiliza instrucciones completadas ignorando burbujas |
 | **Display** | 4 | Formato de cada instrucción, registro activo vs inactivo, CPU con ciclo 0, CPU con ciclo N |
 
-**Resultado:** `36 passed; 0 failed`
+**Resultado:** `37 passed; 0 failed`
 
 ---
 

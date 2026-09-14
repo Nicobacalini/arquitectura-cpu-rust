@@ -3,24 +3,14 @@
 /// Inicializa una CPU con registros de ejemplo, ejecuta un programa de dos
 /// instrucciones y muestra el estado del pipeline ciclo a ciclo.
 use cache_controller::ControladorMemoria;
-use cpu_pipeline::{CpuSegmentada, Instruccion, Registro, RegistroSegmentacion};
+use cpu_pipeline::{CpuSegmentada, Instruccion, Registro};
 
 fn main() {
-    let burbuja = RegistroSegmentacion {
-        instruccion: Instruccion::NOP,
-        activa: false,
-        resultado: None,
-    };
-
     // Estado inicial de la CPU: R1=10, R2=20, todos los demas en 0.
+    // Usamos la sintaxis de actualizacion (..) para heredar el estado limpio de CpuSegmentada::nueva()
     let mut cpu = CpuSegmentada {
-        if_id: burbuja,
-        id_ex: burbuja,
-        ex_mem: burbuja,
-        mem_wb: burbuja,
         registros: [0, 10, 20, 0],
-        program_counter: 0,
-        contador_ciclos: 0,
+        ..CpuSegmentada::nueva()
     };
 
     // Programa de ejemplo:

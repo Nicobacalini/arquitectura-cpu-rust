@@ -100,6 +100,7 @@ pub struct CpuSegmentada {
     pub registros: [u16; 4],           // Banco de registros: [R0, R1, R2, R3]
     pub program_counter: usize,        // Índice de la próxima instrucción a buscar
     pub contador_ciclos: u64,          // Ciclos de reloj transcurridos
+    pub instrucciones_completadas: u64,// Instrucciones completadas (retiradas en WB)
 }
 ```
 
@@ -179,8 +180,8 @@ arquitectura-cpu-rust/
 └── sistema-integrado/               # Crate ejecutable: Integración final y driver 
     ├── Cargo.toml
     └── src/
-        ├── main.rs                  # Bucle de simulación ciclo a ciclo
-        └── display.rs               # Visualizador en consola del estado del pipeline (faltan algunas cosas)
+        ├── main.rs                  # Bucle de simulación ciclo a ciclo y reporte final
+        └── display.rs               # Formateador de resultados y métricas de rendimiento (CPI, IPC, tiempo)
 ```
 
 ---

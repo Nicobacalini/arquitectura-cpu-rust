@@ -1,20 +1,7 @@
 use super::*;
 
 fn cpu_vacia() -> CpuSegmentada {
-    let burbuja = RegistroSegmentacion {
-        instruccion: Instruccion::NOP,
-        activa: false,
-        resultado: None,
-    };
-    CpuSegmentada {
-        if_id: burbuja,
-        id_ex: burbuja,
-        ex_mem: burbuja,
-        mem_wb: burbuja,
-        registros: [0; 4],
-        program_counter: 0,
-        contador_ciclos: 0,
-    }
+    CpuSegmentada::nueva()
 }
 
 // ─── Tests de R0 Hardwired Zero ─────────────────────────────────────────────
@@ -901,3 +888,63 @@ fn test_display_cpu_muestra_contador_actualizado() {
         "Display debe mostrar el ciclo actual"
     );
 }
+
+#[test]
+fn test_instrucciones_completadas_cuenta_solo_instrucciones_retiradas() {
+    let mut cpu = cpu_vacia();
+    let programa = vec![
+        Instruccion::ADD {
+            dest: Registro::R1,
+            src1: Registro::R0,
+            src2: Registro::R0,
+        },
+        Instruccion::SUB {
+            dest: Registro::R2,
+            src1: Registro::R1,
+            src2: Registro::R0,
+        },
+    ];
+    let mut mem = MemoriaProvisoria::new();
+
+    // Drenar el pipeline por completo
+    while cpu.program_counter < programa.len()
+        || cpu.if_id.activa
+        || cpu.id_ex.activa
+        || cpu.ex_mem.activa
+        || cpu.mem_wb.activa
+    {
+        cpu.ciclo_reloj(&programa, &mut mem);
+    }
+
+    // Debe haber completado exactamente las 2 instrucciones del programa
+    assert_eq!(cpu.instrucciones_completadas, 2);
+}
+
+#[test]
+fn test_cpu_nueva_y_sintaxis_de_actualizacion() {
+    let cpu_stock = CpuSegmentada::nueva();
+    assert_eq!(cpu_stock.registros, [0; 4]);
+    assert_eq!(cpu_stock.program_counter, 0);
+    assert_eq!(cpu_stock.contador_ciclos, 0);
+    assert_eq!(cpu_stock.instrucciones_completadas, 0);
+    assert!(!cpu_stock.if_id.activa);
+    assert!(!cpu_stock.id_ex.activa);
+    assert!(!cpu_stock.ex_mem.activa);
+    assert!(!cpu_stock.mem_wb.activa);
+
+    // Sintaxis de actualización (..CpuSegmentada::nueva())
+    let cpu_custom = CpuSegmentada {
+        registros: [0, 5, 10, 15],
+        ..CpuSegmentada::nueva()
+    };
+    assert_eq!(cpu_custom.registros, [0, 5, 10, 15]);
+    assert_eq!(cpu_custom.contador_ciclos, 0);
+    assert!(!cpu_custom.if_id.activa);
+
+    // Trait Default
+    let cpu_default = CpuSegmentada::default();
+    assert_eq!(cpu_default.contador_ciclos, 0);
+    assert_eq!(cpu_default.registros, [0; 4]);
+}
+
+
