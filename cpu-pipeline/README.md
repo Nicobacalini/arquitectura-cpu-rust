@@ -319,9 +319,9 @@ La tabla muestra el estado de los registros de segmentación **al final de cada 
                     └────────────────┬───────────────┘
                                      │
               ┌──────────────────────┼───────────────────────┐
-              │                      │                        │
+              │                      │                       │
         JUMP en EX             STALL (hazard)           NORMAL
-              │                      │                        │
+              │                      │                       │
    ex_mem=ALU(id_ex)       ex_mem=id_ex (directo)   ex_mem=ALU(id_ex)
    id_ex=burbuja            id_ex=burbuja            id_ex=if_id
    if_id=burbuja            (if_id y PC congelados)  if_id=Fetch(PC)

@@ -947,4 +947,58 @@ fn test_cpu_nueva_y_sintaxis_de_actualizacion() {
     assert_eq!(cpu_default.registros, [0; 4]);
 }
 
+// ─── Test de forwarding en cadena sin stalls ──────────────────────────────────
 
+/// Verifica que 3 instrucciones ALU consecutivas donde cada una depende del
+/// resultado de la anterior se resuelven **exclusivamente con forwarding**,
+/// sin insertar ninguna burbuja (stall).
+///
+/// Cadena de dependencias:
+///   I0: R1 = R1 + R2  (2 + 3 = 5)
+///   I1: R2 = R1 + R0  (5 + 0 = 5)  ← depende de I0 via EX/MEM forwarding
+///   I2: R3 = R2 - R1  (5 - 5 = 0)  ← depende de I1 via EX/MEM forwarding
+///
+/// Pipeline ideal de 5 etapas sin stalls: ciclos = n_instrucciones + 4 = 7.
+/// Si hubiera aunque sea un stall, `contador_ciclos` sería >= 8.
+#[test]
+fn test_forwarding_en_cadena_sin_stalls() {
+    let mut cpu = cpu_vacia();
+    cpu.registros[1] = 2;
+    cpu.registros[2] = 3;
+
+    // pero NINGUNA es un LOAD -> el forwarding debe resolver las 3 dependencias
+    // sin insertar una sola burbuja.
+    let programa = vec![
+        Instruccion::ADD {
+            dest: Registro::R1,
+            src1: Registro::R1,
+            src2: Registro::R2,
+        },
+        Instruccion::ADD {
+            dest: Registro::R2,
+            src1: Registro::R1,
+            src2: Registro::R0,
+        },
+        Instruccion::SUB {
+            dest: Registro::R3,
+            src1: Registro::R2,
+            src2: Registro::R1,
+        },
+    ];
+    let mut mem = MemoriaProvisoria::new();
+
+    // Pipeline ideal de 5 etapas: ciclos = n + 4 = 3 + 4 = 7 (SIN stalls)
+    for _ in 0..7 {
+        cpu.ciclo_reloj(&programa, &mut mem);
+    }
+
+    assert_eq!(
+        cpu.contador_ciclos, 7,
+        "sin ningun LOAD de por medio, no debe haber stalls"
+    );
+    assert_eq!(cpu.instrucciones_completadas, 3);
+    // Verificación de resultados aritméticos
+    assert_eq!(cpu.registros[1], 5, "R1 = 2 + 3 = 5");
+    assert_eq!(cpu.registros[2], 5, "R2 = R1(5) + R0(0) = 5");
+    assert_eq!(cpu.registros[3], 0, "R3 = R2(5) - R1(5) = 0");
+}

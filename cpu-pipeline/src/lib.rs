@@ -143,7 +143,7 @@ impl CpuSegmentada {
         }
     }
 
-    /// Alias idiomatico en ingles para [`CpuSegmentada::nueva`].
+    /// Alias en ingles
     #[inline]
     pub fn new() -> Self {
         Self::nueva()

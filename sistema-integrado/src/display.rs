@@ -35,9 +35,18 @@ pub fn reporte_rendimiento(
 
     let mut out = String::new();
 
-    let _ = writeln!(out, "\n============================================================");
-    let _ = writeln!(out, "                    Estado Final de la CPU                  ");
-    let _ = writeln!(out, "============================================================");
+    let _ = writeln!(
+        out,
+        "\n============================================================"
+    );
+    let _ = writeln!(
+        out,
+        "                    Estado Final de la CPU                  "
+    );
+    let _ = writeln!(
+        out,
+        "============================================================"
+    );
     let _ = writeln!(out, "  Ciclos totales de CPU     : {}", ciclos_totales);
     let _ = writeln!(out, "  Instrucciones completadas : {}", instrucciones);
     let _ = writeln!(out, "  Banco de registros        : {:?}", cpu.registros);
@@ -46,10 +55,23 @@ pub fn reporte_rendimiento(
     let _ = writeln!(out, "    R2 = {}", cpu.registros[2]);
     let _ = writeln!(out, "    R3 = {}", cpu.registros[3]);
 
-    let _ = writeln!(out, "\n============================================================");
-    let _ = writeln!(out, "                   Metricas de Rendimiento                  ");
-    let _ = writeln!(out, "============================================================");
-    let _ = writeln!(out, "  Frecuencia configurada    : {:.2} MHz", frecuencia_mhz);
+    let _ = writeln!(
+        out,
+        "\n============================================================"
+    );
+    let _ = writeln!(
+        out,
+        "                   Metricas de Rendimiento                  "
+    );
+    let _ = writeln!(
+        out,
+        "============================================================"
+    );
+    let _ = writeln!(
+        out,
+        "  Frecuencia configurada    : {:.2} MHz",
+        frecuencia_mhz
+    );
     let _ = writeln!(out, "  CPI (Ciclos / Instruccion): {:.2}", cpi);
     let _ = writeln!(out, "  IPC (Instrucciones / Ciclo): {:.2}", ipc);
     let _ = writeln!(
@@ -59,11 +81,28 @@ pub fn reporte_rendimiento(
         tiempo_ns / 1_000.0
     );
 
-    let _ = writeln!(out, "\n============================================================");
-    let _ = writeln!(out, "                    Estadisticas de Cache                   ");
-    let _ = writeln!(out, "============================================================");
-    let _ = writeln!(out, "  Hits                      : {}", mem.estadisticas.hits);
-    let _ = writeln!(out, "  Misses                    : {}", mem.estadisticas.misses);
+    let _ = writeln!(
+        out,
+        "\n============================================================"
+    );
+    let _ = writeln!(
+        out,
+        "                    Estadisticas de Cache                   "
+    );
+    let _ = writeln!(
+        out,
+        "============================================================"
+    );
+    let _ = writeln!(
+        out,
+        "  Hits                      : {}",
+        mem.estadisticas.hits
+    );
+    let _ = writeln!(
+        out,
+        "  Misses                    : {}",
+        mem.estadisticas.misses
+    );
     let _ = writeln!(out, "  Total accesos             : {}", total_accesos);
     let _ = writeln!(out, "  Tasa de aciertos          : {:.2}%", tasa_aciertos);
     let _ = writeln!(
@@ -72,7 +111,10 @@ pub fn reporte_rendimiento(
         mem.estadisticas.desalojos_dirty
     );
     let _ = writeln!(out, "  Ciclos de cache           : {}", mem.contador_ciclos);
-    let _ = writeln!(out, "============================================================\n");
+    let _ = writeln!(
+        out,
+        "============================================================\n"
+    );
 
     out
 }
