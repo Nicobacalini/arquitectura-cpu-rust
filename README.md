@@ -1,5 +1,12 @@
 # Arquitectura CPU en Rust
 
+[![Rust](https://img.shields.io/badge/Rust-2024%20Edition-dea584.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![Cargo](https://img.shields.io/badge/Cargo-Workspace-orange.svg?style=flat-square&logo=rust)](https://doc.rust-lang.org/cargo/)
+[![Architecture](https://img.shields.io/badge/Architecture-RISC%2016--bit-blue.svg?style=flat-square)](https://en.wikipedia.org/wiki/Reduced_instruction_set_computer)
+[![Pipeline](https://img.shields.io/badge/Pipeline-5--Stage-blueviolet.svg?style=flat-square)](https://en.wikipedia.org/wiki/Classic_RISC_pipeline)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)]()
+[![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg?style=flat-square&logo=linux)](https://www.linux.org/)
+
 Simulación didáctica de un procesador RISC de **16 bits** con **pipeline de 5 etapas** (`IF`, `ID`, `EX`, `MEM`, `WB`), resolución de **riesgos de datos (Data Hazards)** mediante *Forwarding* y *Stalls*, y subsistema de memoria caché.
 
 > **Nota de diseño**: Este proyecto replica fielmente el comportamiento de una CPU segmentada a nivel de ciclo de reloj. Los conceptos implementados aplican directamente a arquitecturas reales como MIPS, RISC-V y ARM.
