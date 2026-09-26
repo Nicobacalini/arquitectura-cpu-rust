@@ -58,7 +58,7 @@ Por lo tanto, este simulador implementa una **CPU de 16 bits** (palabra de **2 b
 | **ALU (Bus de Datos / Operaciones)**| `u16` | **16 bits** | **2 bytes** | Cálculos aritméticos (`wrapping_add`, `wrapping_sub`) y resultados de cómputo. |
 | **Valores Inmediatos** | `u16` | **16 bits** | **2 bytes** | Constantes numéricas en instrucciones (permite rangos completos de 16 bits). |
 | **Celda de RAM** | `u8` | **8 bits** | **1 byte** | Cada posición direccionable de la memoria almacena un byte individual. |
-| **Espacio de Direccionamiento RAM** | `[u8; 256]` | **8 bits** (`u8`) | **256 bytes** | Rango `0x00` a `0xFF` direccionable por instrucciones `LOAD`/`STORE`. |
+| **Espacio de Direccionamiento RAM** | `[u8; 4096]` | **16 bits** (`u16`) | **4096 bytes** | Rango `0x0000` a `0x0FFF` direccionable por instrucciones `LOAD`/`STORE`. |
 | **Contador de Programa (`PC`)** | `usize` | 32 o 64 bits | 4 u 8 bytes | Puntero/índice en la memoria de instrucciones del simulador en memoria de host. |
 
 > **Comparación conceptual**: Es una arquitectura comparable a procesadores históricos de 16 bits como el **Intel 8086** o implementaciones didácticas compactas de **MIPS-16/DLX**, donde los datos procesados en la ruta de datos son de 16 bits mientras que la memoria física se organiza y direcciona a nivel de bytes (`u8`).
@@ -79,8 +79,8 @@ Define la arquitectura de conjunto de instrucciones (ISA) soportada:
 * `NOP`: Operación nula (burbuja).
 * `ADD { dest: Registro, src1: Registro, src2: Registro }`: Suma de registros (`dest = src1 + src2`).
 * `SUB { dest: Registro, src1: Registro, src2: Registro }`: Resta de registros (`dest = src1 - src2`).
-* `LOAD { dest: Registro, direccion_ram: u8 }`: Carga un dato de RAM en un registro (`dest = RAM[direccion]`).
-* `STORE { src: Registro, direccion_ram: u8 }`: Almacena el contenido de un registro en RAM (`RAM[direccion] = src`).
+* `LOAD { dest: Registro, direccion_ram: u16 }`: Carga un dato de RAM en un registro (`dest = RAM[direccion]`).
+* `STORE { src: Registro, direccion_ram: u16 }`: Almacena el contenido de un registro en RAM (`RAM[direccion] = src`).
 * `JUMP { direccion_destino: usize }`: Salto incondicional. Redirige el `program_counter` a `direccion_destino` y descarta las instrucciones incorrectas que ya entraron al pipeline (**branch penalty de 2 ciclos**).
 
 ### `pub struct RegistroSegmentacion`
@@ -111,20 +111,21 @@ pub struct CpuSegmentada {
 }
 ```
 
-### `pub struct MemoriaProvisoria`
-Modela la RAM principal del sistema como un arreglo plano de 256 bytes, direccionables con un índice `u8` (rango `0x00`..`0xFF`):
+### `pub struct MemoriaProvisoria` / `ControladorMemoria`
+Modela la RAM principal del sistema como un arreglo plano de 4096 bytes (`TAMANO_RAM`), direccionables con un índice de 16 bits (`u16`):
 ```rust
-pub struct MemoriaProvisoria {
-    pub ram: [u8; 256],
+pub struct ControladorMemoria {
+    pub ram: [u8; TAMANO_RAM], // 4096 bytes
+    // ...
 }
 ```
 | Método | Firma | Descripción |
 |--------|-------|-------------|
-| `new()` | `fn new() -> Self` | Inicializa la RAM con todos los bytes en `0`. |
-| `leer_byte` | `fn leer_byte(&self, direccion: u8) -> u8` | Lee el byte en `ram[direccion]`. |
-| `escribir_byte` | `fn escribir_byte(&mut self, direccion: u8, dato: u8)` | Escribe `dato` en `ram[direccion]`. |
+| `nuevo()` | `fn nuevo() -> Self` | Inicializa la caché y la RAM con todos los bytes en `0`. |
+| `leer_byte` | `fn leer_byte(&mut self, direccion: u16) -> u8` | Lee el byte en `direccion` pasando por la jerarquía de caché. |
+| `escribir_byte` | `fn escribir_byte(&mut self, direccion: u16, dato: u8)` | Escribe `dato` en `direccion` (Write-Back / Write-Allocate). |
 
-Implementa también `Default`, que es equivalente a llamar `MemoriaProvisoria::new()` y es la convención idiomática en Rust para tipos con una construcción vacía bien definida.
+Implementa también `Default`, que es equivalente a llamar `ControladorMemoria::nuevo()` y es la convención idiomática en Rust para tipos con una construcción vacía bien definida.
 
 ---
 

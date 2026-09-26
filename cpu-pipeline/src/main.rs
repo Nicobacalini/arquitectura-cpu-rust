@@ -6,16 +6,13 @@ use cache_controller::ControladorMemoria;
 use cpu_pipeline::{CpuSegmentada, Instruccion, Registro};
 
 fn main() {
-    // Estado inicial de la CPU: R1=10, R2=20, todos los demas en 0.
-    // Usamos la sintaxis de actualizacion (..) para heredar el estado limpio de CpuSegmentada::nueva()
+    // Estado inicial de la CPU con R1 en 10 y R2 en 20
     let mut cpu = CpuSegmentada {
         registros: [0, 10, 20, 0],
         ..CpuSegmentada::nueva()
     };
 
-    // Programa de ejemplo:
-    // I1: ADD R3, R1, R2  -> R3 = 10 + 20 = 30
-    // I2: SUB R3, R3, R1  -> R3 = 30 - 10 = 20 (con forwarding de EX/MEM)
+    // Programa de prueba con ADD y SUB dependiente resuelto por forwarding
     let programa = vec![
         Instruccion::ADD {
             dest: Registro::R3,

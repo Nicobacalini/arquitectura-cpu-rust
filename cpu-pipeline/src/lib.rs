@@ -46,9 +46,9 @@ pub enum Instruccion {
         src2: Registro,
     },
     /// Lee un byte de la RAM en `direccion_ram` y lo guarda en `dest`.
-    LOAD { dest: Registro, direccion_ram: u8 },
+    LOAD { dest: Registro, direccion_ram: u16 },
     /// Escribe el byte del registro `src` en la RAM en `direccion_ram`.
-    STORE { src: Registro, direccion_ram: u8 },
+    STORE { src: Registro, direccion_ram: u16 },
     /// Salta incondicionalmente a la instruccion en `direccion_destino`.
     /// Flushea las dos instrucciones especulativas que estaban en IF/ID e ID/EX.
     JUMP { direccion_destino: usize },
@@ -110,11 +110,10 @@ pub struct CpuSegmentada {
 }
 
 impl CpuSegmentada {
-    /// Crea una nueva CPU segmentada en su estado inicial limpio (de stock):
-    /// - Los 4 registros de segmentacion (`if_id`, `id_ex`, `ex_mem`, `mem_wb`) como burbujas NOP inactivas.
-    /// - Banco de registros R0..R3 en 0.
-    /// - Contador de Programa (`program_counter`) en 0.
-    /// - `contador_ciclos` e `instrucciones_completadas` en 0.
+    /// Crea una nueva CPU segmentada en su estado inicial limpio, configurando los
+    /// cuatro registros de segmentacion como burbujas NOP inactivas, el banco de
+    /// registros R0 a R3 en cero, el contador de programa en cero y los contadores
+    /// de ciclos e instrucciones completadas en cero.
     ///
     /// Puede usarse directamente o junto con la sintaxis de actualizacion de Rust (`..`):
     /// ```rust
@@ -253,13 +252,10 @@ impl CpuSegmentada {
     /// Ejecuta la etapa EX (Execute) sobre la instruccion almacenada en `instruccion`.
     ///
     /// Calcula el campo `resultado` segun el tipo de instruccion y devuelve el
-    /// `RegistroSegmentacion` resultante listo para avanzar a EX/MEM:
-    /// - `ADD` / `SUB`: suma o resta con aritmetica modular (wrapping) para evitar panics.
-    /// - `STORE`: resuelve el operando fuente (con forwarding si aplica) y lo empaqueta
-    ///   en `resultado` para transportarlo hasta la etapa MEM.
-    /// - `LOAD`: no produce resultado en EX; deja `resultado = None` para que el
-    ///   forwarding no adelante un dato inexistente antes de que MEM lea la RAM.
-    /// - `NOP` / buffer inactivo: propaga una burbuja limpia sin efectos secundarios.
+    /// `RegistroSegmentacion` resultante listo para avanzar a EX/MEM. ADD y SUB ejecutan
+    /// operaciones modulares wrapping. STORE empaqueta el operando fuente resuelto con
+    /// forwarding para la etapa MEM. LOAD no produce resultado en EX dejando None para evitar
+    /// adelantos invalidos, mientras que NOP o buffers inactivos propagan una burbuja limpia.
     pub fn ejecutar_alu(&self, instruccion: RegistroSegmentacion) -> RegistroSegmentacion {
         if !instruccion.activa {
             return RegistroSegmentacion {
@@ -293,11 +289,9 @@ impl CpuSegmentada {
     }
 
     /// Ejecuta la etapa MEM (Memory) sobre la instruccion almacenada en `instruccion`.
-    ///
-    /// - `LOAD`: lee un byte de `memoria` en la direccion indicada y lo escribe en `resultado`.
-    /// - `STORE`: toma el valor en `instruccion.resultado` (empaquetado en EX) y lo escribe
-    ///   en `memoria` en la direccion indicada.
-    /// - Cualquier otra instruccion o buffer inactivo: se propaga sin cambios.
+    /// Para LOAD lee un byte de memoria en la direccion indicada y lo asigna a resultado.
+    /// Para STORE escribe en memoria el valor empaquetado previamente en EX.
+    /// Cualquier otra instruccion o buffer inactivo se propaga sin modificaciones.
     pub fn ejecutar_mem(
         &self,
         instruccion: RegistroSegmentacion,
@@ -326,12 +320,10 @@ impl CpuSegmentada {
     }
 
     /// Ejecuta la etapa WB (Write Back) usando el registro `mem_wb`.
-    ///
     /// Si `mem_wb` esta activo y contiene un resultado, escribe el valor
-    /// en el banco de registros segun el tipo de instruccion:
-    /// - `ADD`, `SUB`, `LOAD`: escriben en el registro `dest`.
-    ///   Las escrituras sobre R0 se descartan silenciosamente (hardwired-zero).
-    /// - `STORE`, `NOP`: no escriben en registros.
+    /// en el banco de registros para ADD, SUB o LOAD. Las escrituras sobre
+    /// R0 se descartan silenciosamente por estar cableado a cero. STORE y
+    /// NOP no modifican registros.
     pub fn ejecutar_writeback(&mut self) {
         if !self.mem_wb.activa {
             return;
@@ -356,17 +348,9 @@ impl CpuSegmentada {
     }
 
     /// Avanza el pipeline un ciclo de reloj completo.
-    ///
-    /// Orden de evaluacion en cada ciclo (evita RAW ocultos):
-    /// 1. WB  - escribe `mem_wb` en el banco de registros.
-    /// 2. MEM - procesa `ex_mem` y genera el nuevo valor de `mem_wb`.
-    /// 3. Deteccion de hazards - Load-Use y JUMP.
-    /// 4. Avance de etapas:
-    ///    - JUMP en EX: flushea IF/ID e ID/EX, redirige el PC.
-    ///    - Load-Use stall: inserta burbuja en ID/EX, congela IF/ID y el PC.
-    ///    - Normal: avanza todas las etapas y busca la proxima instruccion.
-    /// 5. Actualiza `mem_wb` con el resultado de MEM.
-    /// 6. Incrementa `contador_ciclos`.
+    /// Procesa en orden inverso: primero WB en registros, luego MEM hacia WB,
+    /// deteccion de hazards con stalls o flushes por saltos, avance de etapas
+    /// desde EX hacia MEM e ID hacia EX, y finalmente busqueda de instruccion en IF.
     pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut ControladorMemoria) {
         self.ejecutar_writeback();
 
@@ -448,9 +432,7 @@ impl fmt::Display for Instruccion {
     }
 }
 
-/// Formatea un `RegistroSegmentacion`:
-/// - Si esta activo, muestra la instruccion que contiene.
-/// - Si es una burbuja (inactivo), muestra `"--"`.
+/// Formatea un `RegistroSegmentacion` mostrando la instruccion contenida si esta activo o guiones si es una burbuja.
 impl fmt::Display for RegistroSegmentacion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.activa {

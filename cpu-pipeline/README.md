@@ -2,10 +2,11 @@
 
 > Simulación de una CPU de 5 etapas con pipeline, forwarding y detección de hazards, implementada en Rust.
 
+---
 
 ## 1. Contexto y Objetivo
 
-Simulamos una CPU con **pipeline de 5 etapas** (IF, ID, EX, MEM, WB), el modelo clásico de arquitecturas RISC (MIPS, RISC-V). El objetivo es demostrar, con una implementación funcional y testeada, cómo el hardware real resuelve los **riesgos de datos (data hazards)** que aparecen al solapar la ejecución de instrucciones consecutivas — usando **forwarding** cuando es posible, y **stalls** cuando no queda otra opción — así como el **riesgo de control** que introduce una instrucción de salto (`JUMP`).
+Simulamos una CPU con **pipeline de 5 etapas** (IF, ID, EX, MEM, WB), el modelo clásico de arquitecturas RISC (MIPS, RISC-V). El objetivo es demostrar, con una implementación funcional y testeada, cómo el hardware real resuelve los **riesgos de datos (data hazards)** mediante **forwarding** y **stalls**, y el **riesgo de control** de una instrucción `JUMP`.
 
 ```
 ┌──────┐   ┌──────┐   ┌──────┐   ┌──────┐   ┌──────┐
@@ -17,36 +18,39 @@ Simulamos una CPU con **pipeline de 5 etapas** (IF, ID, EX, MEM, WB), el modelo 
             lee regs)             RAM)      el banco)
 ```
 
-En cada ciclo de reloj, hasta 5 instrucciones distintas pueden estar "en vuelo" simultáneamente, una en cada etapa — de ahí que el estado del procesador se modele con 4 **registros de segmentación** (`IF/ID`, `ID/EX`, `EX/MEM`, `MEM/WB`), cada uno un buffer entre dos etapas consecutivas.
+En cada ciclo, hasta 5 instrucciones distintas pueden estar "en vuelo" simultáneamente, modeladas con 4 **registros de segmentación** (`IF/ID`, `ID/EX`, `EX/MEM`, `MEM/WB`).
+
+---
 
 ## 2. Estructuras de Datos
 
-### `MemoriaProvisoria`
+### `MemoriaProvisoria` / `Memoria`
 
-Memoria RAM simulada de **256 bytes** direccionables con un índice `u8` (`0x00`..`0xFF`).
-En una implementación completa sería reemplazada por el `ControladorMemoria` del Proyecto 2 (ver [Sección 9](#9-integración-con-el-controlador-de-caché-proyecto-2)).
+Alias que apuntan al `ControladorMemoria` del crate `cache-controller`. La memoria del pipeline es la caché L1 real (asociativa por conjuntos, LRU, Write-Back):
 
 ```rust
-pub struct MemoriaProvisoria {
-    pub ram: [u8; 256],
-}
+pub use cache_controller::ControladorMemoria as Memoria;
+pub type MemoriaProvisoria = ControladorMemoria;
 ```
+
+Los tests y el código existente pueden usar cualquier alias — ambos apuntan al mismo tipo.
 
 | Método | Descripción |
 |---|---|
-| `new()` | Inicializa toda la RAM en `0` |
-| `leer_byte(dir)` | Lee el byte en la dirección `dir` |
-| `escribir_byte(dir, dato)` | Escribe `dato` en la dirección `dir` |
+| `new()` | Inicializa caché y RAM en `0` |
+| `leer_byte(dir: u16)` | Lee a través de la caché (hit/miss con LRU) |
+| `escribir_byte(dir: u16, dato: u8)` | Escribe en caché (Write-Back, Write-Allocate) |
+| `flush()` | Vuelca líneas dirty a RAM sin invalidar |
+
+> En la integración con jerarquía de dos niveles, `ejecutar_mem` puede recibir también una `&mut JerarquiaCache` — ver [Sección 9](#9-integración-con-el-subsistema-de-caché).
 
 ### `Registro`
-
-Identificador de los cuatro registros generales de la CPU.
 
 ```rust
 pub enum Registro { R0, R1, R2, R3 }
 ```
 
-> **R0 es hardwired-zero**: siempre vale `0`. Las escrituras sobre él son silenciosamente descartadas en WB, y el forwarding nunca lo anticipa (ver [Sección 4.3](#4-decisiones-de-diseño-y-su-justificación)).
+> **R0 es hardwired-zero**: siempre vale `0`. Las escrituras se descartan en WB; el forwarding nunca lo anticipa (ver [§4.3](#43-por-qué-r0-se-filtra-también-en-el-forwarding)).
 
 ### `Instruccion`
 
@@ -55,51 +59,49 @@ Conjunto de instrucciones (ISA) soportadas por la CPU:
 ```rust
 pub enum Instruccion {
     NOP,
-    ADD { dest: Registro, src1: Registro, src2: Registro },
-    SUB { dest: Registro, src1: Registro, src2: Registro },
-    LOAD { dest: Registro, direccion_ram: u8 },
-    STORE { src: Registro, direccion_ram: u8 },
-    JUMP { direccion_destino: usize },
+    ADD  { dest: Registro, src1: Registro, src2: Registro },
+    SUB  { dest: Registro, src1: Registro, src2: Registro },
+    LOAD  { dest: Registro, direccion_ram: u16 },
+    STORE { src:  Registro, direccion_ram: u16 },
+    JUMP  { direccion_destino: usize },
 }
 ```
 
-| Instrucción | Operandos | Descripción |
-|---|---|---|
-| `NOP` | — | Sin operación (burbuja) |
-| `ADD` | `dest, src1, src2` | `dest = src1 + src2` (wrapping u16) |
-| `SUB` | `dest, src1, src2` | `dest = src1 - src2` (wrapping u16) |
-| `LOAD` | `dest, dir_ram` | `dest = RAM[dir_ram]` |
-| `STORE` | `src, dir_ram` | `RAM[dir_ram] = src` |
-| `JUMP` | `dir_destino` | Salta incondicionalmente a `dir_destino`; flushea el pipeline |
+| Instrucción | Descripción |
+|---|---|
+| `NOP` | Sin operación (burbuja) |
+| `ADD` | `dest = src1 + src2` (wrapping u16) |
+| `SUB` | `dest = src1 - src2` (wrapping u16) |
+| `LOAD` | `dest = RAM[dir_ram]` (a través de la caché) |
+| `STORE` | `RAM[dir_ram] = src` (a través de la caché, Write-Back) |
+| `JUMP` | Salto incondicional; flushea el pipeline (branch penalty: 2 ciclos) |
+
+> `LOAD` y `STORE` usan `u16` para `direccion_ram` — permite acceder a toda la RAM de 4096 bytes sin conversiones.
 
 ### `RegistroSegmentacion`
 
-Buffer físico entre dos etapas del pipeline. Cada uno de los cuatro registros del pipeline (`IF/ID`, `ID/EX`, `EX/MEM`, `MEM/WB`) es una instancia de esta misma estructura (justificación del diseño uniforme en [Sección 4.5](#4-decisiones-de-diseño-y-su-justificación)).
-
 ```rust
 pub struct RegistroSegmentacion {
-    pub instruccion: Instruccion,  // Instrucción en tránsito
-    pub activa:      bool,          // false = burbuja (NOP inactivo)
+    pub instruccion: Instruccion,   // Instrucción en tránsito
+    pub activa:      bool,           // false = burbuja NOP inactivo
     pub resultado:   Option<u16>,   // None hasta que la etapa calcula el valor
 }
 ```
 
-El campo `resultado: Option<u16>` es clave para el forwarding: un `LOAD` en `EX/MEM` tiene `resultado = None` hasta que termina la etapa `MEM`, lo que impide anticipar datos inexistentes.
+El campo `resultado: Option<u16>` es clave: un `LOAD` en `EX/MEM` tiene `resultado = None` hasta que termina MEM, impidiendo anticipar datos inexistentes.
 
 ### `CpuSegmentada`
 
-Estado global del procesador. Contiene los cuatro registros de segmentación, el banco de registros, el PC y el contador de ciclos.
-
 ```rust
 pub struct CpuSegmentada {
-    pub if_id:           RegistroSegmentacion, // Fetch -> Decode
-    pub id_ex:           RegistroSegmentacion, // Decode -> Execute
-    pub ex_mem:          RegistroSegmentacion, // Execute -> Memory
-    pub mem_wb:          RegistroSegmentacion, // Memory -> Write Back
-    pub registros:       [u16; 4],             // Banco R0..R3
-    pub program_counter: usize,                // Índice de la próx. instrucción
-    pub contador_ciclos: u64,                  // Ciclos transcurridos
-    pub instrucciones_completadas: u64,        // Instrucciones completadas (retiradas en WB)
+    pub if_id:                    RegistroSegmentacion,
+    pub id_ex:                    RegistroSegmentacion,
+    pub ex_mem:                   RegistroSegmentacion,
+    pub mem_wb:                   RegistroSegmentacion,
+    pub registros:                [u16; 4],
+    pub program_counter:          usize,
+    pub contador_ciclos:          u64,
+    pub instrucciones_completadas: u64,
 }
 ```
 
@@ -113,27 +115,17 @@ pub struct CpuSegmentada {
 pub fn detectar_load_use_hazard(&self, instruccion_en_id: &Instruccion) -> bool
 ```
 
-#### ¿Por qué existe este hazard?
-
-El forwarding resuelve la mayoría de los riesgos de datos, pero **no todos**. Una instrucción `ADD` produce su resultado al final de **EX**. Un `LOAD`, en cambio, obtiene el dato al final de **MEM** — un ciclo más tarde. Si la instrucción inmediatamente siguiente necesita ese valor en su etapa **EX**, hay un conflicto insalvable: el dato no existe a tiempo para ser anticipado.
+El forwarding resuelve la mayoría de los riesgos de datos, pero **no todos**. Un `LOAD` obtiene el dato al final de **MEM** — si la instrucción siguiente lo necesita en **EX**, el dato no existe todavía. La única solución es un **stall de 1 ciclo**.
 
 ```
          LOAD  |  IF  |  ID  |  EX  |  MEM* |  WB  |
-         ADD   |      |  IF  |  ID  |  EX*  |  MEM  |  WB  |
+         ADD   |      |  IF  |  ID  |  EX*  |  MEM |  WB  |
                                        ^        ^
                                 ADD necesita  LOAD produce
                                 R1 aquí       R1 aquí (MEM)
 ```
 
-La única solución es insertar un **stall de 1 ciclo** (burbuja `NOP` en `id_ex`) y congelar `if_id` y el `PC`.
-
-#### Lógica interna
-
-1. Verifica que `id_ex` esté activo y contenga un `LOAD { dest: reg_load }`.
-2. Inspecciona la instrucción en `ID`:
-   - `ADD` / `SUB`: hazard si `src1 == reg_load` o `src2 == reg_load`.
-   - `STORE`: hazard si `src == reg_load`.
-   - `NOP`, `LOAD`, `JUMP`: no hay conflicto → retorna `false`.
+Lógica: si `id_ex` es un `LOAD` activo y la instrucción en `ID` (`ADD`/`SUB`/`STORE`) usa el registro destino del `LOAD` → retorna `true`. `NOP`, `LOAD`, `JUMP` en ID nunca generan este hazard.
 
 ### 3.2 `calcular_forwarding`
 
@@ -161,10 +153,7 @@ El **Forwarding (Bypassing)** conecta directamente la salida de etapas posterior
 | **2** | `MEM/WB` | activo, `dest == src`, `resultado == Some(_)` |
 | **Sin forwarding** | Banco de registros | Ninguna etapa produce `src` |
 
-#### Casos especiales
-
-- **R0 hardwired-zero**: retorna `None` inmediatamente. El banco garantiza `registros[0] == 0`.
-- **LOAD en EX/MEM**: su `resultado` es `None` en esa etapa (aún no leyó la RAM), por lo que la función retorna `None` sin caer a `MEM/WB`. Esto previene anticipar datos inexistentes.
+Casos especiales: **R0** retorna `None` directamente (hardwired-zero). **LOAD en EX/MEM**: `resultado` es `None` todavía — retorna `None` sin caer a `MEM/WB`.
 
 ### 3.3 `resolver_operando`
 
@@ -172,22 +161,16 @@ El **Forwarding (Bypassing)** conecta directamente la salida de etapas posterior
 pub fn resolver_operando(&self, src: Registro) -> u16
 ```
 
-Implementa el **MUX** a la entrada de la ALU: intenta `calcular_forwarding` primero, y solo si devuelve `None` lee directamente `self.registros[src]`.
+Implementa el **MUX** de la ALU: intenta forwarding primero; si retorna `None`, lee del banco de registros.
 
 ### 3.4 `ejecutar_alu`
 
-```rust
-pub fn ejecutar_alu(&self, instruccion: RegistroSegmentacion) -> RegistroSegmentacion
-```
-
-Ejecuta la etapa **EX**:
-
 | Instrucción | Acción |
 |---|---|
-| `ADD` / `SUB` | Resuelve ambos operandos con `resolver_operando` (aplicando forwarding) y calcula con `wrapping_add`/`wrapping_sub` |
-| `LOAD` | `resultado = None` — el dato se calcula recién en MEM |
-| `STORE` | Resuelve `src` (con forwarding) y lo empaqueta en `resultado`, como "vagón de carga" hacia MEM |
-| `NOP` / inactiva | Propaga una burbuja limpia sin efectos colaterales |
+| `ADD` / `SUB` | Resuelve operandos (forwarding aplicado), calcula con `wrapping_add`/`wrapping_sub` |
+| `LOAD` | `resultado = None` — el dato llega en MEM |
+| `STORE` | Resuelve `src` (forwarding) y lo empaqueta en `resultado` |
+| `NOP` / inactiva | Propaga burbuja limpia |
 
 ### 3.5 `ejecutar_mem`
 
@@ -195,17 +178,17 @@ Ejecuta la etapa **EX**:
 pub fn ejecutar_mem(
     &self,
     instruccion: RegistroSegmentacion,
-    memoria: &mut MemoriaProvisoria,
+    memoria: &mut ControladorMemoria,
 ) -> RegistroSegmentacion
 ```
 
-Ejecuta la etapa **MEM (Memory Access)**. Es la única etapa autorizada para acceder a la RAM:
+Única etapa autorizada para acceder a la RAM (a través de la caché):
 
 | Instrucción | Acción |
 |---|---|
-| `LOAD` | Lee `RAM[dir_ram]` → completa `resultado = Some(byte as u16)` |
-| `STORE` | Escribe `resultado` (empaquetado en EX) → `RAM[dir_ram] = valor as u8` |
-| Resto | Pasa sin modificaciones hacia `MEM/WB` |
+| `LOAD` | `dato = memoria.leer_byte(direccion_ram)` → `resultado = Some(dato as u16)` |
+| `STORE` | `memoria.escribir_byte(direccion_ram, resultado as u8)` |
+| Resto | Pasa sin modificaciones |
 
 ### 3.6 `ejecutar_writeback`
 
@@ -213,17 +196,14 @@ Ejecuta la etapa **MEM (Memory Access)**. Es la única etapa autorizada para acc
 pub fn ejecutar_writeback(&mut self)
 ```
 
-Ejecuta la etapa **WB (Write Back)** usando el registro `mem_wb`:
-
-- Si `mem_wb.activa` es `true`, incrementa `self.instrucciones_completadas += 1` (contabiliza solo instrucciones reales que completan el pipeline, ignorando burbujas).
+- Incrementa `instrucciones_completadas += 1` (solo si `mem_wb.activa`).
 - `ADD`, `SUB`, `LOAD` con `dest != R0`: escribe `resultado` en `registros[dest]`.
-- **R0**: la escritura se descarta silenciosamente (hardwired-zero).
-- `STORE`, `NOP`, registro inactivo: no modifica el banco.
+- Escrituras a R0 se descartan silenciosamente.
 
 ### 3.7 `ciclo_reloj`
 
 ```rust
-pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut MemoriaProvisoria)
+pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut ControladorMemoria)
 ```
 
 Orquesta un ciclo de reloj completo. Modela el **flanco ascendente de reloj** del hardware.
@@ -237,25 +217,24 @@ La solución es procesar en **orden inverso a la ruta de datos** (WB → MEM →
 #### Orden de evaluación por ciclo
 
 ```
-1. WB     →  ejecutar_writeback()           consolida mem_wb en el banco de registros
-2. MEM    →  nuevo_mem_wb = ejecutar_mem()  resultado guardado en variable temporal
-3. Hazards → detectar_load_use_hazard()     inspecciona if_id vs id_ex
-              inspecciona id_ex             guarda destino si hay JUMP
-             ╔══════════════════════════════════╗
-4. Avance    ║  JUMP > Stall > Normal           ║
-             ╠══════════════════════════════════╣
-             ║ JUMP:   flush if_id + id_ex      ║
-             ║         PC = dir_destino         ║
-             ╠──────────────────────────────────╣
-             ║ STALL:  ex_mem = id_ex (sin ALU) ║
-             ║         id_ex  = burbuja         ║
-             ║         if_id y PC congelados    ║
-             ╠──────────────────────────────────╣
-             ║ NORMAL: ex_mem = ALU(id_ex)      ║
-             ║         id_ex  = if_id           ║
-             ║         if_id  = Fetch(PC)       ║
-             ║         PC    += 1               ║
-             ╚══════════════════════════════════╝
+1. WB     → ejecutar_writeback()
+2. MEM    → nuevo_mem_wb = ejecutar_mem()      [resultado en variable temporal]
+3. Hazards→ detectar_load_use_hazard() + JUMP en id_ex
+             ╔════════════════════════════════╗
+4. Avance    ║  JUMP > Stall > Normal          ║
+             ╠════════════════════════════════╣
+             ║ JUMP:   flush if_id + id_ex    ║
+             ║         PC = dir_destino       ║
+             ╠────────────────────────────────╣
+             ║ STALL:  ex_mem = id_ex (sin ALU)║
+             ║         id_ex  = burbuja       ║
+             ║         if_id y PC congelados  ║
+             ╠────────────────────────────────╣
+             ║ NORMAL: ex_mem = ALU(id_ex)    ║
+             ║         id_ex  = if_id         ║
+             ║         if_id  = Fetch(PC)     ║
+             ║         PC    += 1             ║
+             ╚════════════════════════════════╝
 5. mem_wb = nuevo_mem_wb
 6. contador_ciclos += 1
 ```
@@ -281,10 +260,9 @@ Cuando `PC >= len(programa)`, la etapa IF inyecta burbujas (`NOP` inactivos). La
 
 ### 3.8 Diagrama Temporal: Load-Use Hazard con Stall y Forwarding
 
-**Programa de ejemplo:**
 ```assembly
 LOAD  R1, 0x10   ; R1 = RAM[0x10] = 15
-ADD   R2, R1, R0 ; R2 = R1 + 0    = 15  (necesita R1 -> Load-Use Hazard)
+ADD   R2, R1, R0 ; R2 = R1 + 0    (Load-Use Hazard → 1 stall)
 ```
 
 La tabla muestra el estado de los registros de segmentación **al final de cada ciclo** (lo que imprime `Display`). La columna "Evento" describe lo ocurrido durante ese ciclo.
@@ -355,27 +333,20 @@ Cada tipo implementa `fmt::Display` siguiendo la convención idiomática de Rust
 
 ## 4. Decisiones de Diseño y su Justificación
 
-Esta sección documenta **por qué** el pipeline está diseñado como está, no solo **qué** hace — incluyendo un bug real que se encontró y corrigió durante el desarrollo (4.3).
-
 ### 4.1 Evaluación en Orden Inverso del Pipeline
 
-**Decisión:** `ciclo_reloj` procesa las etapas en orden `WB → MEM → hazard/JUMP → EX → ID → IF`, nunca en el orden natural del datapath.
-
-**Por qué:** en silicio, las 5 etapas leen y escriben sus registros de segmentación **simultáneamente**, en el mismo flanco de reloj. En una simulación de un solo hilo, las asignaciones ocurren una detrás de otra — si procesáramos en orden natural, una etapa temprana sobreescribiría un buffer antes de que la etapa siguiente leyera su valor *del ciclo anterior*.
+En silicio, las 5 etapas operan **en paralelo**. En software monohilo deben ser secuenciales. El orden inverso `WB → MEM → ... → IF` garantiza que cada etapa lee el estado estable del ciclo anterior antes de que etapas tempranas lo sobreescriban.
 
 ```
-❌ ORDEN NATURAL (INCORRECTO)              ✅ ORDEN INVERSO (CORRECTO)
-────────────────────────────              ──────────────────────────
-1. if_id = Fetch(PC)     ← escribe         1. WB   lee mem_wb  (viejo)
-2. id_ex = if_id         ← YA CONTAMINADO  2. MEM  lee ex_mem  (viejo)
-   (if_id es el NUEVO,     con el fetch    3. hazard/JUMP: lee if_id, id_ex (viejos)
-    no el de este ciclo)   de este mismo   4. ex_mem = ALU(id_ex)     ← recién ahora
-3. ex_mem = ALU(id_ex)     ciclo           5. id_ex  = if_id
-4. mem_wb = ex_mem       ← arrastra el     6. if_id  = Fetch(PC)     ← al final
-   dato ya "adelantado"    error en cadena 7. mem_wb = nuevo_mem_wb
+❌ ORDEN NATURAL (INCORRECTO)        ✅ ORDEN INVERSO (CORRECTO)
+1. if_id = Fetch(PC)  ← escribe     1. WB   lee mem_wb  (viejo)
+2. id_ex = if_id      ← CONTAMINADO 2. MEM  lee ex_mem  (viejo)
+3. ex_mem = ALU(id_ex)              3. hazard: lee if_id, id_ex (viejos)
+4. mem_wb = ex_mem                  4. ex_mem = ALU(id_ex)  ← recién ahora
+                                    5. id_ex  = if_id
+                                    6. if_id  = Fetch(PC)   ← al final
+                                    7. mem_wb = nuevo_mem_wb
 ```
-
-**Costo aceptado:** el código es menos "legible en orden de datapath" (uno esperaría leer IF primero) — se compensa documentando el orden explícitamente en cada `ciclo_reloj`.
 
 ### 4.2 Por qué el Load-Use Hazard No Se Resuelve con Forwarding
 
@@ -457,100 +428,65 @@ SUB R3, R2, R1     ; ciclo 3: entra a EX, necesita R2 → EX/MEM tiene el 2do AD
 
 ### 4.5 Un Solo Tipo para las Cuatro Etapas
 
-**Decisión:** `RegistroSegmentacion` es un único struct genérico reutilizado para los 4 buffers (`if_id`, `id_ex`, `ex_mem`, `mem_wb`), en vez de 4 tipos distintos cada uno con los campos específicos que esa transición necesita.
-
-```
-❌ Alternativa: un tipo por etapa           ✅ Elegido: un tipo uniforme
-──────────────────────────────             ─────────────────────────────
-struct BufferIfId { instr: Instruccion }   struct RegistroSegmentacion {
-struct BufferIdEx { instr: Instruccion }       instruccion: Instruccion,
-struct BufferExMem {                           activa: bool,
-    instr: Instruccion,                        resultado: Option<u16>,
-    resultado: Option<u16>,                }
-}                                           // el mismo tipo sirve para las 4
-struct BufferMemWb { ... }                 // posiciones del pipeline
-```
-
-**Por qué:** con un tipo uniforme, avanzar el pipeline es una simple asignación de structs (`self.ex_mem = self.id_ex;`), sin conversiones entre tipos ni lógica condicional. El campo `resultado: Option<u16>` está "de más" para `if_id`/`id_ex` (donde siempre vale `None`), pero ese pequeño desperdicio de memoria es insignificante comparado con la simplicidad de tener un solo tipo, una sola implementación de `Display`, y poder escribir `let burbuja = RegistroSegmentacion { .. }` una vez y reutilizarla en los 4 lugares.
+`RegistroSegmentacion` uniforme permite avanzar el pipeline con simples asignaciones de struct (`self.ex_mem = self.id_ex`), sin conversiones entre tipos. El campo `resultado` está "de más" en `if_id`/`id_ex`, pero el costo de memoria es insignificante frente a la simplicidad del código.
 
 ### 4.6 Ausencia de Predicción de Saltos
 
-**Decisión:** `JUMP` siempre asume, implícitamente, que se va a tomar — no hay lógica de "predicción" propiamente dicha, simplemente se resuelve en EX y se paga la penalidad de 2 ciclos siempre.
+`JUMP` siempre paga 2 ciclos de penalidad. No hay lógica de predicción porque implementarla requeriría checkpoint/rollback y contabilización de aciertos/fallos — fuera del alcance pedagógico de este simulador.
 
-```
-Con predicción "no tomado" (no implementado)     Sin predicción (implementado)
-─────────────────────────────────────────────    ──────────────────────────────
-Si predicción correcta: 0 ciclos perdidos         SIEMPRE 2 ciclos perdidos
-Si predicción incorrecta: 2 ciclos perdidos        (flush de if_id + id_ex,
-(requiere lógica adicional de checkpoint/          sin importar si "hubiera"
- rollback más allá del flush simple)               convenido predecir distinto)
-```
+### 4.7 Aritmética Wrapping
 
-**Por qué:** implementar predicción real requeriría además contabilizar aciertos/fallos de predicción y un mecanismo de rollback más elaborado (ver Sección 10, extensión opcional). Para el alcance de este proyecto, un `JUMP` incondicional con penalidad fija de 2 ciclos es estándar en CPUs simples sin unidad de predicción (ej. los primeros diseños MIPS clásicos), y mantiene el código de `ciclo_reloj` legible.
-
-**Costo aceptado:** cualquier programa con saltos paga 2 ciclos de penalidad por cada `JUMP`, sin excepción — no hay forma de que el simulador "adivine bien" y los evite.
-
-### 4.7 Aritmética Wrapping en vez de Checked
-
-**Decisión:** `ejecutar_alu` usa `wrapping_add`/`wrapping_sub` en vez de la aritmética por defecto de Rust (que hace panic en overflow en modo debug) o `checked_add`/`checked_sub` (que devuelven `Option`).
-
-**Por qué:** el hardware real de una ALU de N bits no "sabe" que ocurrió un overflow a menos que se le pida explícitamente verificar una flag de carry/overflow — simplemente trunca el resultado al ancho de bits disponible. `wrapping_*` es la operación de Rust que replica ese comportamiento físico exacto. Usar la aritmética por defecto haría que la simulación **crashee** con un programa perfectamente válido en hardware real (ej. un contador de 16 bits que da la vuelta de `0xFFFF` a `0x0000`) — sería simular mal el hardware, no una mejora de seguridad.
-
-**Costo aceptado:** ninguno — es estrictamente más fiel al comportamiento real que cualquier alternativa.
+`wrapping_add`/`wrapping_sub` replica el comportamiento físico de la ALU: sin panic en overflow (como `0xFFFF + 1 → 0x0000` en hardware real).
 
 ---
 
 ## 5. API Pública
 
-| Función / Método | Firma | Detalle en |
+| Función / Método | Firma | Sección |
 |---|---|---|
-| `detectar_load_use_hazard` | `(&self, &Instruccion) -> bool` | [3.1](#31-detectar_load_use_hazard) |
-| `calcular_forwarding` | `(&self, Registro) -> Option<u16>` | [3.2](#32-calcular_forwarding) |
-| `resolver_operando` | `(&self, Registro) -> u16` | [3.3](#33-resolver_operando) |
-| `ejecutar_alu` | `(&self, RegistroSegmentacion) -> RegistroSegmentacion` | [3.4](#34-ejecutar_alu) |
-| `ejecutar_mem` | `(&self, RegistroSegmentacion, &mut MemoriaProvisoria) -> RegistroSegmentacion` | [3.5](#35-ejecutar_mem) |
-| `ejecutar_writeback` | `(&mut self)` | [3.6](#36-ejecutar_writeback) |
-| `ciclo_reloj` | `(&mut self, &[Instruccion], &mut MemoriaProvisoria)` | [3.7](#37-ciclo_reloj) |
-| `MemoriaProvisoria::new/leer_byte/escribir_byte` | ver [Sección 2](#2-estructuras-de-datos) | — |
+| `detectar_load_use_hazard` | `(&self, &Instruccion) -> bool` | 3.1 |
+| `calcular_forwarding` | `(&self, Registro) -> Option<u16>` | 3.2 |
+| `resolver_operando` | `(&self, Registro) -> u16` | 3.3 |
+| `ejecutar_alu` | `(&self, RegistroSegmentacion) -> RegistroSegmentacion` | 3.4 |
+| `ejecutar_mem` | `(&self, RegistroSegmentacion, &mut ControladorMemoria) -> RegistroSegmentacion` | 3.5 |
+| `ejecutar_writeback` | `(&mut self)` | 3.6 |
+| `ciclo_reloj` | `(&mut self, &[Instruccion], &mut ControladorMemoria)` | 3.7 |
 
 ---
 
 ## 6. Suite de Tests
 
-Todos los tests viven en [`src/tests.rs`](src/tests.rs). Se ejecutan con:
-
 ```bash
 cargo test --package cpu-pipeline
 ```
 
+**Resultado: `39 passed + 1 doctest; 0 failed`**
+
 | Categoría | Tests | Qué verifican |
 |---|---|---|
-| **Forwarding unitario** | 5 | `calcular_forwarding`: sin pipeline, R0→None, EX/MEM activo, MEM/WB activo, LOAD en EX/MEM sin caer a MEM/WB |
+| **Forwarding unitario** | 5 | `calcular_forwarding`: sin pipeline, R0→None, EX/MEM activo, MEM/WB activo, LOAD sin caer a MEM/WB |
 | **Prioridad de forwarding** | 1 | EX/MEM tiene prioridad absoluta sobre MEM/WB |
 | **Forwarding integrado** | 3 | EX/MEM→EX, MEM/WB→EX, ambos operandos src1+src2 simultáneos |
-| **Hazard detection unitario** | 6 | LOAD→ADD detecta, LOAD→SUB detecta, LOAD→LOAD no, LOAD→JUMP no, id_ex inactivo no, ADD en id_ex no |
-| **Load-Use con stall** | 3 | ADD después de LOAD, SUB después de LOAD, STORE después de LOAD |
-| **Control hazard (JUMP)** | 2 | Flush de instrucciones especulativas, reset de PC |
-| **R0 hardwired-zero** | 2 | Forwarding nunca anticipa R0, LOAD y SUB no modifican R0 |
-| **Memoria** | 2 | Lectura/escritura, estado inicial en cero |
+| **Forwarding en cadena** | 1 | 3 instrucciones consecutivas dependientes sin stalls |
+| **Hazard detection unitario** | 6 | LOAD→ADD, LOAD→SUB, LOAD→LOAD no, LOAD→JUMP no, id_ex inactivo, ADD en id_ex |
+| **Load-Use con stall** | 3 | ADD, SUB y STORE después de LOAD |
+| **Control hazard (JUMP)** | 2 | Flush especulativo, reset de PC |
+| **R0 hardwired-zero** | 2 | Forwarding no anticipa R0, LOAD/SUB no modifican R0 |
+| **Memoria** | 2 | Lectura/escritura, estado inicial |
 | **Aritmética** | 2 | ADD+SUB sin hazards, overflow wrapping u16 |
 | **LOAD/STORE** | 2 | Round-trip STORE→LOAD, STORE con forwarding desde EX |
-| **Pipeline NOP / vacío** | 2 | NOPs no modifican registros, programa vacío es estable |
-| **Contador de ciclos y métricas** | 2 | Avanza exactamente 1 por ciclo, contabiliza instrucciones completadas ignorando burbujas |
-| **Display** | 4 | Formato de cada instrucción, registro activo vs inactivo, CPU con ciclo 0, CPU con ciclo N |
-
-**Resultado:** `37 passed; 0 failed`
+| **Pipeline NOP / vacío** | 2 | NOPs no modifican registros, programa vacío estable |
+| **Métricas** | 2 | `contador_ciclos` avanza exactamente 1, contabiliza completadas ignorando burbujas |
+| **Display** | 4 | Formato instrucciones, registro activo/inactivo, CPU ciclo 0 y N |
 
 ---
 
 ## 7. Errores Comunes al Implementar (Gotchas)
 
-Bugs reales encontrados durante el desarrollo de este crate — documentados para que no se repitan al extenderlo:
-
-- **Perder la instrucción `LOAD` durante un stall:** en un borrador temprano, al insertar la burbuja se sobreescribía `id_ex` con `NOP` *antes* de haber movido el `LOAD` real a `ex_mem`, perdiéndolo del pipeline para siempre. La corrección: en la rama de stall, `ex_mem = self.id_ex` (el `LOAD` avanza) debe ejecutarse **antes** de asignar la burbuja a `id_ex`.
-- **Filtrar R0 solo en `ejecutar_writeback` y no en `calcular_forwarding`:** ver [Sección 4.3](#4-decisiones-de-diseño-y-su-justificación) — el bug del "valor fantasma" de R0.
-- **Definir la lógica del pipeline en `main.rs` en vez de `lib.rs`:** un binario (`main.rs`) no es importable desde otros crates del workspace. Toda la lógica reutilizable debe vivir en la librería (`lib.rs`), dejando `main.rs` únicamente como demo/punto de entrada.
-- **Evaluar el ciclo en orden natural (IF→WB) en vez de inverso:** ver [Sección 4.1](#4-decisiones-de-diseño-y-su-justificación) — produce lecturas de buffers ya contaminados por el mismo ciclo.
+- **Perder el `LOAD` durante un stall:** asignar burbuja a `id_ex` antes de mover el `LOAD` a `ex_mem` → lo pierde. Orden correcto: `ex_mem = self.id_ex` **primero**, `id_ex = burbuja` después.
+- **Filtrar R0 solo en `ejecutar_writeback`:** el forwarding lee de los buffers del pipeline directamente — sin el filtro en `calcular_forwarding`, R0 produce valores fantasma (ver §4.3).
+- **Poner la lógica del pipeline en `main.rs`:** un binario no es importable. Toda lógica reutilizable vive en `lib.rs`.
+- **Evaluar el ciclo en orden natural (IF→WB):** produce lecturas de buffers ya contaminados (ver §4.1).
 
 ---
 
@@ -561,19 +497,29 @@ cpu-pipeline/
 ├── Cargo.toml
 └── src/
     ├── lib.rs      # API pública: tipos, pipeline, hazard detection, forwarding
-    ├── main.rs     # Binario de demo: ejecuta un programa de ejemplo
-    └── tests.rs    # Suite completa de tests unitarios e integración
+    ├── main.rs     # Binario de demo
+    └── tests.rs    # 39 tests unitarios + 1 doctest
 ```
 
 ---
 
-## 9. Integración con el Controlador de Caché (Proyecto 2)
+## 9. Integración con el Subsistema de Caché
 
-`MemoriaProvisoria` es deliberadamente "provisoria": su única razón de ser es desacoplar el desarrollo del pipeline del desarrollo de la jerarquía de memoria. Cuando el crate `cache-controller` esté listo:
+`MemoriaProvisoria` ya es un alias de `ControladorMemoria` (caché L1 real con LRU, Write-Back, Write-Allocate). La integración con la jerarquía de dos niveles está implementada en `cache-controller` mediante `JerarquiaCache`:
 
-- `cpu-pipeline/Cargo.toml` va a declarar `cache-controller = { path = "../cache-controller" }`.
-- `ejecutar_mem` (Sección 3.5) va a recibir un `&mut ControladorMemoria` en vez de `&mut MemoriaProvisoria`, sin cambiar ninguna otra parte del pipeline — la firma de la función es idéntica en forma (`leer_byte`/`escribir_byte`), solo cambia el tipo concreto.
-- El binario final (`sistema-integrado`) va a poder imprimir, al terminar la ejecución de un programa, tanto la traza del pipeline como las estadísticas de la caché (hits/misses/desalojos) en un único reporte combinado.
+```rust
+// En sistema-integrado, la CPU puede operar sobre ControladorMemoria (L1 solo)
+// o sobre JerarquiaCache (L1 → L2 → RAM):
+cpu.ciclo_reloj(&programa, &mut memoria);  // memoria: ControladorMemoria
+// Para jerarquía completa, ejecutar_mem puede recibir &mut JerarquiaCache
+// con la misma firma leer_byte/escribir_byte — no requiere cambios en el pipeline.
+```
 
----
+La etapa `ejecutar_mem` es la **única** que accede a memoria — no hay ningún otro punto de contacto entre pipeline y caché. El `flush()` final sincroniza las líneas dirty con la RAM principal.
 
+```bash
+# Ejecutar el sistema integrado completo (CPU + caché)
+cargo run --package sistema-integrado
+# Verificar todos los tests del workspace
+cargo test --workspace
+```

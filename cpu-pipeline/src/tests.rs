@@ -932,7 +932,7 @@ fn test_cpu_nueva_y_sintaxis_de_actualizacion() {
     assert!(!cpu_stock.ex_mem.activa);
     assert!(!cpu_stock.mem_wb.activa);
 
-    // Sintaxis de actualización (..CpuSegmentada::nueva())
+    // Sintaxis de actualizacion para valores personalizados
     let cpu_custom = CpuSegmentada {
         registros: [0, 5, 10, 15],
         ..CpuSegmentada::nueva()
@@ -941,7 +941,6 @@ fn test_cpu_nueva_y_sintaxis_de_actualizacion() {
     assert_eq!(cpu_custom.contador_ciclos, 0);
     assert!(!cpu_custom.if_id.activa);
 
-    // Trait Default
     let cpu_default = CpuSegmentada::default();
     assert_eq!(cpu_default.contador_ciclos, 0);
     assert_eq!(cpu_default.registros, [0; 4]);
@@ -966,8 +965,7 @@ fn test_forwarding_en_cadena_sin_stalls() {
     cpu.registros[1] = 2;
     cpu.registros[2] = 3;
 
-    // pero NINGUNA es un LOAD -> el forwarding debe resolver las 3 dependencias
-    // sin insertar una sola burbuja.
+    // Sin instrucciones LOAD intermedias el forwarding resuelve las dependencias sin stalls
     let programa = vec![
         Instruccion::ADD {
             dest: Registro::R1,
@@ -987,7 +985,7 @@ fn test_forwarding_en_cadena_sin_stalls() {
     ];
     let mut mem = MemoriaProvisoria::new();
 
-    // Pipeline ideal de 5 etapas: ciclos = n + 4 = 3 + 4 = 7 (SIN stalls)
+    // Pipeline ideal de cinco etapas sin stalls
     for _ in 0..7 {
         cpu.ciclo_reloj(&programa, &mut mem);
     }
@@ -997,7 +995,6 @@ fn test_forwarding_en_cadena_sin_stalls() {
         "sin ningun LOAD de por medio, no debe haber stalls"
     );
     assert_eq!(cpu.instrucciones_completadas, 3);
-    // Verificación de resultados aritméticos
     assert_eq!(cpu.registros[1], 5, "R1 = 2 + 3 = 5");
     assert_eq!(cpu.registros[2], 5, "R2 = R1(5) + R0(0) = 5");
     assert_eq!(cpu.registros[3], 0, "R3 = R2(5) - R1(5) = 0");

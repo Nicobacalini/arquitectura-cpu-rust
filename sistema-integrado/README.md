@@ -1,16 +1,20 @@
-# Proyecto 3: Sistema Integrado (CPU Segmentada + Controlador de Caché)
+# Sistema Integrado — CPU Segmentada + Jerarquía de Caché
 
-> Integración completa de una CPU segmentada de 5 etapas con un controlador de memoria caché asociativa por conjuntos (2 vías, LRU, Write-Back / Write-Allocate).
+> Integración completa de una CPU segmentada de 5 etapas con una jerarquía de memoria caché de dos niveles (L1 → L2 → RAM), política LRU, Write-Back / Write-Allocate.
 
 ---
 
 ## 1. Contexto y Objetivo
 
 En los proyectos anteriores implementamos y testeamos de forma aislada:
-1. **`cpu-pipeline` (Proyecto 1):** Un procesador de 5 etapas (IF, ID, EX, MEM, WB) con resolución de hazards de datos mediante **forwarding**, detección de **Load-Use hazards** (con inyección de burbujas/stalls) y penalización de saltos (`JUMP`).
-2. **`cache-controller` (Proyecto 2):** Un subsistema de memoria con RAM de 256 bytes intermediada por una **caché asociativa por conjuntos de 2 vías** (4 conjuntos × 2 vías = 32 bytes), con reemplazo **LRU**, política **Write-Back** y **Write-Allocate**.
 
-El objetivo de este proyecto (`sistema-integrado`) es **unir ambos subsistemas en una máquina unificada**. La memoria provisoria del pipeline se reemplaza por el controlador de caché real: cada instrucción `LOAD` o `STORE` que llega a la etapa **MEM** interactúa directamente con la jerarquía de memoria caché/RAM, registrando aciertos (*hits*), fallos (*misses*) y tráfico hacia la memoria principal.
+1. **`cpu-pipeline`:** CPU de 5 etapas (IF, ID, EX, MEM, WB) con forwarding, Load-Use hazards y penalización de JUMP.
+2. **`cache-controller`:** Jerarquía de dos niveles:
+   - **L1:** 4 conjuntos × 2 vías, 32 bytes efectivos, tag=12b (decodificador propio).
+   - **L2:** 8 conjuntos × 2 vías, 64 bytes efectivos, tag=11b (decodificador propio).
+   - **Write-back en cadena:** desalojo dirty de L1 → L2; desalojo dirty de L2 → RAM.
+
+El objetivo de `sistema-integrado` es **unir ambos subsistemas en una máquina unificada**. Cada instrucción `LOAD` o `STORE` en la etapa MEM pasa por la jerarquía real de caché, registrando hits, misses y tráfico hacia la RAM.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -21,26 +25,26 @@ El objetivo de este proyecto (`sistema-integrado`) es **unir ambos subsistemas e
 │   └──────┘      └──────┘      └──────┘      └──────┘      └──────┘      │
 │    Fetch         Decode        ALU          Memoria       Write Back    │
 └────────────────────────────────────────────────┬────────────────────────┘
-                                                 │
-                                                 │ leer_byte(dir)
-                                                 │ escribir_byte(dir, dato)
+                                                 │ leer_byte(dir: u16)
+                                                 │ escribir_byte(dir: u16, dato: u8)
                                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    CONTROLADOR DE MEMORIA CACHÉ                         │
+│                   CONTROLADOR DE MEMORIA (ControladorMemoria)           │
 │                                                                         │
 │   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │ CACHÉ L1 ASOCIATIVA POR CONJUNTOS (4 Sets × 2 Vías = 32 bytes)  │   │
-│   │ Política: Write-Back, Write-Allocate, Reemplazo LRU             │   │
-│   └────────────────────────────────┬────────────────────────────────┘   │
-│                                    │                                    │
-│                                    │ Tráfico en Miss y Desalojo Dirty   │
-│                                    ▼                                    │
+│   │  CACHÉ L1 — 4 Sets × 2 Vías = 32 bytes   tag=12b / idx=2b      │   │
+│   │  Write-Back · Write-Allocate · LRU                             │   │
+│   └────────────────────────────┬────────────────────────────────────┘   │
+│                                │ Miss / Desalojo Dirty                  │
+│                                ▼                                        │
 │   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                      MEMORIA RAM PRINCIPAL                      │   │
-│   │                     (256 bytes direccionables)                  │   │
+│   │                 MEMORIA RAM PRINCIPAL                           │   │
+│   │         (4096 bytes, direccionamiento u16)                      │   │
 │   └─────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **Nota sobre la jerarquía de dos niveles:** `sistema-integrado` usa actualmente `ControladorMemoria` (L1 standalone) como la memoria del pipeline, al igual que antes. La `JerarquiaCache` (L1→L2→RAM con write-back en cadena) está implementada y testeada en `cache-controller` y puede integrarse en el pipeline sin cambios de firma — `leer_byte`/`escribir_byte` tienen la misma API en ambos tipos.
 
 ---
 
@@ -56,23 +60,14 @@ pub fn ejecutar_mem(
     instruccion: RegistroSegmentacion,
     memoria: &mut ControladorMemoria,
 ) -> RegistroSegmentacion {
-    if !instruccion.activa {
-        return instruccion;
-    }
-
     match instruccion.instruccion {
         Instruccion::LOAD { direccion_ram, .. } => {
-            // Lee a través de la caché: hit devuelve el byte en 1 ciclo,
-            // miss carga el bloque de 4 bytes desde RAM.
+            // Lee a través de la caché: hit en 1 ciclo, miss carga bloque de 4 bytes
             let dato = memoria.leer_byte(direccion_ram);
-            RegistroSegmentacion {
-                resultado: Some(dato as u16),
-                ..instruccion
-            }
+            RegistroSegmentacion { resultado: Some(dato as u16), ..instruccion }
         }
         Instruccion::STORE { direccion_ram, .. } => {
-            // Escribe en caché: Write-Allocate asegura que el bloque esté cargado,
-            // Write-Back marca dirty_bit = true sin tocar la RAM.
+            // Write-Back: escribe en caché (dirty_bit=true), no toca RAM todavía
             if let Some(valor) = instruccion.resultado {
                 memoria.escribir_byte(direccion_ram, valor as u8);
             }
@@ -85,18 +80,15 @@ pub fn ejecutar_mem(
 
 ### 2.2 Sincronización al Drenar el Pipeline (`flush`)
 
-Debido a que la caché opera con política **Write-Back**, las escrituras realizadas por las instrucciones `STORE` residen inicialmente solo en las líneas de la caché con su bit `dirty_bit = true`.
-Al completarse la ejecución del programa y vaciarse el pipeline, el simulador invoca:
+Con política Write-Back, las escrituras de `STORE` residen en caché con `dirty_bit = true`. Al finalizar la ejecución, el simulador invoca:
 
 ```rust
 memoria.flush();
 ```
 
-Esto garantiza que todas las líneas sucias sean volcadas a la memoria RAM sin invalidarlas, asegurando la consistencia física de la memoria.
+Esto vuelca todas las líneas sucias a la RAM principal sin invalidarlas — equivalente a un `fsync` de nivel de aplicación.
 
-### 2.3 Módulo de Reporte y Métricas de Rendimiento (`display.rs`)
-
-Para mantener el principio de responsabilidad única y desacoplar la simulación del formateo y análisis de resultados, la lógica de presentación vive en [`src/display.rs`](src/display.rs) mediante la función:
+### 2.3 Módulo de Reporte y Métricas (`display.rs`)
 
 ```rust
 pub fn reporte_rendimiento(
@@ -106,38 +98,37 @@ pub fn reporte_rendimiento(
 ) -> String
 ```
 
-Este módulo procesa los contadores internos de la CPU y de la memoria para derivar indicadores estándar de rendimiento:
-* **CPI (Ciclos por Instrucción):** Relación entre los ciclos totales del procesador y las instrucciones reales retiradas en la etapa WB.
-* **IPC (Instrucciones por Ciclo):** Inverso del CPI, representa el *throughput* efectivo de la CPU.
-* **Tiempo de Ejecución Estimado:** Proyectado a partir de una frecuencia de reloj configurable (en MHz).
-* **Tasa de Aciertos de Caché (%):** Porcentaje de accesos a memoria resueltos directamente en la caché L1 sin requerir acceso a RAM.
+Indica los indicadores estándar derivados de los contadores internos:
+
+| Métrica | Fórmula |
+|---|---|
+| **CPI** | `ciclos_totales / instrucciones_completadas` |
+| **IPC** | `instrucciones_completadas / ciclos_totales` |
+| **Tiempo estimado** | `ciclos / (frecuencia_mhz × 10⁶)` × 10⁹ ns |
+| **Tasa de aciertos L1** | `hits / (hits + misses)` |
 
 ---
 
 ## 3. Programas de Demostración
 
-El binario principal [`src/main.rs`](src/main.rs) itera sobre el catálogo definido en [`src/ejemplos.rs`](src/ejemplos.rs) y ejecuta cada ejemplo en secuencia. Para agregar un nuevo ejemplo basta con editar solo `ejemplos.rs`.
-
-Cada ejemplo se define mediante la estructura `Ejemplo`:
+El binario [`src/main.rs`](src/main.rs) itera sobre el catálogo de [`src/ejemplos.rs`](src/ejemplos.rs). Para agregar un nuevo ejemplo, solo se modifica `ejemplos.rs`.
 
 ```rust
 pub struct Ejemplo {
-    pub nombre: &'static str,
-    pub descripcion: &'static str,
-    /// Valores iniciales [R0, R1, R2, R3]
-    pub registros_iniciales: [u16; 4],
-    /// Precarga de RAM: lista de (dirección, valor)
-    pub ram_inicial: &'static [(u8, u8)],
-    pub programa: fn() -> Vec<Instruccion>,
+    pub nombre:               &'static str,
+    pub descripcion:          &'static str,
+    pub registros_iniciales:  [u16; 4],
+    pub ram_inicial:          &'static [(u8, u8)],
+    pub programa:             fn() -> Vec<Instruccion>,
 }
 ```
 
-La CPU se inicializa con la **sintaxis de actualización de Rust (`..`)**:
+La CPU se inicializa con la **sintaxis de actualización de Rust**:
 
 ```rust
 let mut cpu = CpuSegmentada {
     registros: ej.registros_iniciales,
-    ..CpuSegmentada::nueva()  // pipeline en NOP, PC en 0, contadores en 0
+    ..CpuSegmentada::nueva()  // pipeline en NOP, PC=0, contadores=0
 };
 ```
 
@@ -146,9 +137,9 @@ let mut cpu = CpuSegmentada {
 **Estado inicial:** `R2=10`, `RAM[0x10]=15`
 
 ```
-[0] LOAD R1,0x10    → R1 = 15        (Miss de caché)
+[0] LOAD R1,0x10    → R1 = 15        (Miss: carga bloque 0x10..0x13)
 [1] ADD  R2,R1,R2   → R2 = 15+10=25  (Load-Use Hazard: stall 1 ciclo)
-[2] STORE R2,0x20   → RAM[0x20] = 25 (Miss + Write-Allocate)
+[2] STORE R2,0x20   → RAM[0x20] = 25 (Miss + Write-Allocate, dirty_bit=true)
 [3] LOAD R3,0x20    → R3 = 25        (Hit: mismo bloque recién cargado)
 [4] SUB  R3,R3,R1   → R3 = 25-15=10  (Load-Use Hazard adicional)
 ```
@@ -160,11 +151,11 @@ let mut cpu = CpuSegmentada {
 **Estado inicial:** `R1=10`, `R2=20`
 
 ```
-[0] ADD R3,R1,R2   → R3 = 10+20=30
-[1] SUB R2,R3,R1   → R2 = 30-10=20
-[2] ADD R1,R2,R1   → R1 = 20+10=30
-[3] ADD R3,R3,R2   → R3 = 30+20=50
-[4] SUB R2,R1,R2   → R2 = 30-20=10
+[0] ADD R3,R1,R2   → R3 = 30
+[1] SUB R2,R3,R1   → R2 = 20
+[2] ADD R1,R2,R1   → R1 = 30
+[3] ADD R3,R3,R2   → R3 = 50
+[4] SUB R2,R1,R2   → R2 = 10
 ```
 
 Solo instrucciones ALU: el forwarding elimina todos los stalls. La caché no se ejercita.
@@ -176,24 +167,22 @@ Solo instrucciones ALU: el forwarding elimina todos los stalls. La caché no se 
 **Estado inicial:** `R1=5`, `R2=3`
 
 ```
-[0] ADD  R1,R1,R2  → R1 = 5+3=8      (ejecutada)
-[1] JUMP 0x04      → salta a I4       (flush de I2 e I3)
+[0] ADD  R1,R1,R2  → R1 = 8       (ejecutada)
+[1] JUMP 0x04      → salta a I4   (flush de I2 e I3 → branch penalty: 2 ciclos)
 [2] ADD  R2,R2,R1  → (DESCARTADA)
 [3] SUB  R3,R3,R2  → (DESCARTADA)
-[4] ADD  R3,R1,R3  → R3 = 8+0=8      (primera post-salto)
+[4] ADD  R3,R1,R3  → R3 = 8+0=8  (primera post-salto)
 [5] STORE R3,0x30  → RAM[0x30] = 8
 ```
 
-El JUMP se resuelve en EX. Para ese momento ya entraron I2 e I3 al pipeline — ambas se descartan con flush (branch penalty: 2 ciclos). El contador de instrucciones completadas marca **4**, no 6.
-
-**Resultado:** `R1=8  R3=8` | **CPI:** 2.50 | **Instrucciones completadas:** 4
+**Resultado:** `R1=8  R3=8` | **CPI:** 2.50 | **Instrucciones completadas:** 4 (no 6)
 
 ### Ejemplo 4 — Múltiples accesos a memoria (Hit/Miss)
 
 **Estado inicial:** `RAM[0x10]=5`, `RAM[0x11]=8`
 
 ```
-[0] LOAD R1,0x10   → R1 = 5   (Miss: carga el bloque 0x10..0x13)
+[0] LOAD R1,0x10   → R1 = 5   (Miss: carga bloque 0x10..0x13)
 [1] LOAD R2,0x11   → R2 = 8   (Hit: 0x11 está en el mismo bloque que 0x10)
 [2] ADD  R3,R1,R2  → R3 = 13  (Load-Use Hazard desde I1)
 [3] STORE R3,0x20  → RAM[0x20] = 13
@@ -202,61 +191,41 @@ El JUMP se resuelve en EX. Para ese momento ya entraron I2 e I3 al pipeline — 
 [6] STORE R2,0x21  → RAM[0x21] = 5
 ```
 
-Demuestra localidad espacial (0x10 y 0x11 en el mismo bloque), Write-Back y re-lectura de datos propios.
-
 **Resultado:** `R1=13  R2=5  R3=13` | **CPI:** 1.86 | **Cache:** 3 hits / 2 misses (60%)
 
 ---
 
 ## 4. Traza de Ejecución — Ejemplo 1
 
-La traza completa del Ejemplo 1 (Load-Use Hazard + Cache Hit) es la siguiente:
-
-```text
-Ciclo 1  | IF/ID: LOAD R1,0x10 | ID/EX: --            | EX/MEM: --            | MEM/WB: --
-Ciclo 2  | IF/ID: ADD R2,R1,R2 | ID/EX: LOAD R1,0x10  | EX/MEM: --            | MEM/WB: --
-Ciclo 3  | IF/ID: ADD R2,R1,R2 | ID/EX: --            | EX/MEM: LOAD R1,0x10  | MEM/WB: --
-Ciclo 4  | IF/ID: STORE R2,0x20| ID/EX: ADD R2,R1,R2  | EX/MEM: --            | MEM/WB: LOAD R1,0x10
-Ciclo 5  | IF/ID: LOAD R3,0x20 | ID/EX: STORE R2,0x20 | EX/MEM: ADD R2,R1,R2  | MEM/WB: --
-Ciclo 6  | IF/ID: SUB R3,R3,R1 | ID/EX: LOAD R3,0x20  | EX/MEM: STORE R2,0x20 | MEM/WB: ADD R2,R1,R2
-Ciclo 7  | IF/ID: SUB R3,R3,R1 | ID/EX: --            | EX/MEM: LOAD R3,0x20  | MEM/WB: STORE R2,0x20
-Ciclo 8  | IF/ID: --           | ID/EX: SUB R3,R3,R1  | EX/MEM: --            | MEM/WB: LOAD R3,0x20
-Ciclo 9  | IF/ID: --           | ID/EX: --            | EX/MEM: SUB R3,R3,R1  | MEM/WB: --
-Ciclo 10 | IF/ID: --           | ID/EX: --            | EX/MEM: --            | MEM/WB: SUB R3,R3,R1
-Ciclo 11 | IF/ID: --           | ID/EX: --            | EX/MEM: --            | MEM/WB: --
-```
-
-### Análisis de eventos clave:
-
-| Ciclo | Etapa | Evento en Pipeline | Evento en Caché |
-|:---:|:---:|---|---|
-| **1** | IF | Fetch de `LOAD R1,0x10`. | — |
-| **2** | ID / EX | `LOAD` pasa a ID/EX. Se busca `ADD`. La CPU detecta que `ADD` usa R1. | — |
-| **3** | **HAZARD / MEM** | **Load-Use Stall:** burbuja en `ID/EX`. `IF/ID` y `PC` congelados. | `LOAD` en MEM: **Cache Miss** en `0x10`. Bloque cargado desde RAM. |
-| **4** | WB / EX | `LOAD` consolida en WB (`R1=15`). `ADD` avanza a EX. | — |
-| **5** | EX / MEM | `ADD` calcula `R2 = 15+10 = 25`. | — |
-| **6** | MEM | `STORE R2,0x20` con valor `25`. | **Cache Miss** (Write-Allocate): carga bloque `0x20`, escribe `25`, `dirty_bit=true`. |
-| **7** | **HAZARD / MEM** | **Segundo Load-Use Stall:** `SUB` necesita `R3` que recién llega de MEM. | `LOAD R3,0x20`: **Cache Hit** (bloque cargado en ciclo anterior). |
-| **8** | WB / EX | `LOAD` escribe `R3=25`. `SUB` avanza a EX. | — |
-| **9–11** | Drenado | `SUB` calcula `25-15=10`, avanza y consolida en WB. Pipeline vacío en ciclo 11. | — |
+| Ciclo | IF/ID | ID/EX | EX/MEM | MEM/WB | Evento clave |
+|:---:|:---:|:---:|:---:|:---:|---|
+| 1 | `LOAD R1` | `--` | `--` | `--` | Fetch de LOAD |
+| 2 | `ADD R2` | `LOAD R1` | `--` | `--` | ADD entra, LOAD pasa a decode |
+| 3 | `ADD R2` ❄️ | `--` | `LOAD R1` | `--` | **Stall.** LOAD en MEM: **Cache Miss** en 0x10. Bloque cargado |
+| 4 | `STORE R2` | `ADD R2` | `--` | `LOAD(15)` | LOAD consolida R1=15 en WB. ADD descongelado |
+| 5 | `LOAD R3` | `STORE R2` | `ADD R2(25)` | `--` | ADD calcula 15+10=25 |
+| 6 | `SUB R3` | `LOAD R3` | `STORE R2` | `ADD(25)` | **Cache Miss** 0x20 (Write-Allocate). dirty\_bit=true |
+| 7 | `SUB R3` ❄️ | `--` | `LOAD R3` | `STORE` | **Stall.** LOAD en MEM: **Cache Hit** en 0x20 |
+| 8 | `--` | `SUB R3` | `--` | `LOAD(25)` | LOAD escribe R3=25 en WB |
+| 9 | `--` | `--` | `SUB R3(10)` | `--` | SUB calcula 25-15=10 |
+| 10 | `--` | `--` | `--` | `SUB(10)` | Pass-through MEM |
+| 11 | `--` | `--` | `--` | `--` | **WB** escribe R3=10. Pipeline drenado ✅ |
 
 ---
 
 ## 5. Traza de Ejecución — Ejemplo 3 (JUMP)
 
-La traza del Ejemplo 3 ilustra visualmente el branch penalty:
-
-```text
+```
 Ciclo 1 | IF/ID: ADD R1,R1,R2  | ID/EX: --           | EX/MEM: --           | MEM/WB: --
 Ciclo 2 | IF/ID: JUMP 0x04     | ID/EX: ADD R1,R1,R2 | EX/MEM: --           | MEM/WB: --
 Ciclo 3 | IF/ID: ADD R2,R2,R1  | ID/EX: JUMP 0x04    | EX/MEM: ADD R1,R1,R2 | MEM/WB: --
-Ciclo 4 | IF/ID: --            | ID/EX: --            | EX/MEM: JUMP 0x04    | MEM/WB: ADD R1,R1,R2
-Ciclo 5 | IF/ID: ADD R3,R1,R3  | ID/EX: --            | EX/MEM: --           | MEM/WB: JUMP 0x04
+Ciclo 4 | IF/ID: --            | ID/EX: --            | EX/MEM: JUMP 0x04    | MEM/WB: ADD(8)
+Ciclo 5 | IF/ID: ADD R3,R1,R3  | ID/EX: --            | EX/MEM: --           | MEM/WB: JUMP
 Ciclo 6 | IF/ID: STORE R3,0x30 | ID/EX: ADD R3,R1,R3 | EX/MEM: --           | MEM/WB: --
 ...
 ```
 
-En el **Ciclo 3**, `ADD R2,R2,R1` (I2) ya entró al pipeline. El JUMP llega a EX en el **Ciclo 4** y dispara el flush: tanto `if_id` (I2) como `id_ex` (vacío especulativo) se convierten en burbujas `--`. El `PC` salta a 4. En el **Ciclo 5** comienza a fluir `ADD R3,R1,R3` (I4) como primera instrucción legítima post-salto.
+En el Ciclo 4, el JUMP llega a EX y dispara el flush: `if_id` y `id_ex` se convierten en burbujas. PC salta a 4. En el Ciclo 5 comienza `ADD R3,R1,R3` como primera instrucción legítima post-salto.
 
 ---
 
@@ -269,70 +238,86 @@ En el **Ciclo 3**, `ADD R2,R2,R1` (I2) ya entró al pipeline. El JUMP llega a EX
 | CPI | 2.20 | **1.80** | 2.50 | 1.86 |
 | IPC | 0.45 | 0.56 | 0.40 | 0.54 |
 | Tiempo @ 100 MHz | 110 ns | 90 ns | 100 ns | 130 ns |
-| Cache hits | 1 | 0 | 0 | 3 |
-| Cache misses | 2 | 0 | 1 | 2 |
-| Tasa de aciertos | 33% | — | — | **60%** |
+| Cache L1 hits | 1 | 0 | 0 | 3 |
+| Cache L1 misses | 2 | 0 | 1 | 2 |
+| Tasa de aciertos L1 | 33% | — | — | **60%** |
 
 **Observaciones:**
-- El Ejemplo 2 tiene el **CPI más bajo (1.80)** porque no tiene accesos a memoria ni stalls: solo forwarding entre instrucciones ALU consecutivas.
-- El Ejemplo 3 tiene el **CPI más alto (2.50)** por la penalidad del JUMP (2 ciclos de flush) sobre solo 4 instrucciones completadas.
-- El Ejemplo 4 tiene la **tasa de aciertos más alta (60%)** gracias a la localidad espacial (0x10 y 0x11 en el mismo bloque) y al Write-Back que preserva datos propios en caché.
+- **CPI más bajo (1.80):** Ejemplo 2, sin memoria ni stalls — solo forwarding entre instrucciones ALU.
+- **CPI más alto (2.50):** Ejemplo 3, penalidad del JUMP (2 ciclos flush) sobre 4 instrucciones.
+- **Tasa de aciertos más alta (60%):** Ejemplo 4, gracias a localidad espacial (0x10 y 0x11 en el mismo bloque) y Write-Back que preserva datos propios en caché.
 
 ---
 
 ## 7. Decisiones de Diseño
 
-### 7.1 Interacción entre Stalls del Pipeline y la Latencia de Caché
+### 7.1 Interacción entre Stalls del Pipeline y Latencia de Caché
 
-En una CPU real, un fallo de caché (*cache miss*) hacia la memoria RAM toma decenas o cientos de ciclos. En este simulador pedagógico:
-- La lógica de detección de hazards del pipeline desacopla el control de datos: el **Load-Use stall** de 1 ciclo resuelve la dependencia temporal inherente al datapath (el dato no está disponible hasta el final de MEM).
-- Si la caché produjera un retardo variable por miss a RAM, la CPU podría congelarse agregando ciclos de *memory stall* sin alterar la corrección del forwarding ni la detección de riesgos.
+En una CPU real, un miss a RAM toma decenas o cientos de ciclos. En este simulador pedagógico la latencia del miss es inmediata — el Load-Use stall de 1 ciclo resuelve la dependencia temporal del datapath (el dato no está disponible hasta el final de MEM), independientemente de si la caché tardó 1 o 100 ciclos en servir el bloque.
 
 ### 7.2 Eficiencia de Write-Back con Write-Allocate
 
-- Si hubiésemos utilizado **Write-Through**, la instrucción `STORE` del Ejemplo 1 (ciclo 6) habría forzado una escritura síncrona a la memoria RAM externa.
-- Con **Write-Back**, la CPU escribió el dato en la caché inmediatamente. Al requerir la instrucción siguiente (`LOAD R3,0x20`) ese mismo dato, se obtuvo un **Hit** directo en caché sin que la RAM externa interviniera.
+- Con Write-Through, `STORE R2,0x20` en el Ejemplo 1 habría forzado escritura síncrona a RAM en el ciclo 6.
+- Con Write-Back, el dato quedó en caché (`dirty_bit=true`). Cuando `LOAD R3,0x20` pidió ese bloque en el ciclo 7, obtuvo un **Hit** directo sin que la RAM interviniera.
 
-### 7.3 Separación de responsabilidades: `ejemplos.rs` vs `main.rs`
+### 7.3 Write-back en cadena (L1 → L2 → RAM)
 
-Los programas de ejemplo se definen íntegramente en [`src/ejemplos.rs`](src/ejemplos.rs) a través de la función pública `catalogo()`. `main.rs` se limita a iterar sobre ese catálogo e invocar `ejecutar_ejemplo()`. Esto garantiza que:
-- Agregar un nuevo ejemplo **no requiere modificar `main.rs`**.
-- La lógica de ejecución (loop de ciclos, flush, reporte) está en un único lugar reutilizable.
-- Cada módulo tiene una única razón para cambiar (*single responsibility*).
+Aunque `sistema-integrado` usa L1 standalone (`ControladorMemoria`), la jerarquía completa (`JerarquiaCache`) implementa una cadena de write-back: los desalojos dirty de L1 van a L2, y solo los desalojos dirty de L2 llegan a RAM. Esto reduce el tráfico hacia la memoria principal incluso más que con un solo nivel.
+
+### 7.4 Separación de responsabilidades
+
+- `ejemplos.rs` define el catálogo — agregar un ejemplo no toca `main.rs`.
+- `display.rs` centraliza el formateo de métricas — fácil de extender (ej. agregar estadísticas de L2).
+- `main.rs` solo itera el catálogo e invoca `ejecutar_ejemplo()`.
 
 ---
 
 ## 8. Compilación y Ejecución
 
-Para compilar y ejecutar la simulación integrada (todos los ejemplos en secuencia):
-
 ```bash
-cargo run --package sistema-integrado --bin sistema-integrado
-```
+# Ejecutar todos los ejemplos en secuencia
+cargo run --package sistema-integrado
 
-Para verificar la integridad de todos los tests unitarios del espacio de trabajo completo:
-
-```bash
+# Verificar todos los tests del workspace completo
 cargo test --workspace
 ```
 
+### Resultado de tests del workspace
+
 | Crate | Tests | Cobertura |
 |---|---|---|
-| `cache-controller` | 15 | Políticas LRU, Write-Back, Write-Allocate, decodificación de direcciones |
-| `cpu-pipeline` | 38 | Forwarding, Load-Use hazards, saltos, `nueva()`, sintaxis de actualización, métricas (+1 doctest) |
-| `sistema-integrado` | 1 | Cálculo y formateo del reporte de rendimiento (CPI, IPC, tiempos, caché) |
-| **Total** | **54** | **100% pasando** |
+| `cache-controller` | **22** | L1 standalone (LRU, Write-Back, decodificación u16) · L2 standalone · JerarquiaCache (L1→L2→RAM, write-back en cadena) · migración de tipo u16 |
+| `cpu-pipeline` | **39** (+1 doctest) | Forwarding, Load-Use hazards, JUMP, R0 hardwired-zero, aritmética wrapping, métricas, Display |
+| `sistema-integrado` | **1** | Cálculo y formateo del reporte de rendimiento (CPI, IPC, tiempos, caché) |
+| **Total** | **63** | **100% pasando** |
 
 ---
 
 ## 9. Estructura de Archivos
 
-```text
-sistema-integrado/
-├── Cargo.toml       # Declara dependencias hacia cpu-pipeline y cache-controller
-├── README.md        # Documentación de la arquitectura integrada y resultados
-└── src/
-    ├── display.rs   # Módulo de formateo y cálculo de métricas (CPI, IPC, etc.)
-    ├── ejemplos.rs  # Catálogo de programas de ejemplo (struct Ejemplo + catalogo())
-    └── main.rs      # Binario: itera el catálogo y ejecuta cada ejemplo
+```
+arquitectura-cpu-rust/
+├── Cargo.toml               # workspace: cpu-pipeline, cache-controller, sistema-integrado
+│
+├── cache-controller/
+│   └── src/
+│       ├── lib.rs           # Re-exports: ControladorMemoria, NivelL2, JerarquiaCache
+│       ├── storage.rs       # Structs, constantes, decodificadores L1/L2
+│       ├── policy.rs        # elegir_via_victima + manejar_miss + tasa_de_aciertos
+│       ├── bus.rs           # leer_byte, escribir_byte, flush (L1 standalone)
+│       ├── hierarchy.rs     # JerarquiaCache: orquestador L1→L2→RAM
+│       ├── main.rs          # Demo interactivo (6 demos L1 y L2)
+│       └── tests.rs         # 22 tests
+│
+├── cpu-pipeline/
+│   └── src/
+│       ├── lib.rs           # Pipeline, forwarding, hazard detection, API pública
+│       ├── main.rs          # Demo de pipeline standalone
+│       └── tests.rs         # 39 tests
+│
+└── sistema-integrado/
+    └── src/
+        ├── display.rs       # reporte_rendimiento() + test de métricas
+        ├── ejemplos.rs      # Catálogo de programas (struct Ejemplo + catalogo())
+        └── main.rs          # Runner: itera catálogo y ejecuta cada ejemplo
 ```

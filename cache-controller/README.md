@@ -1,60 +1,80 @@
-# Proyecto 2: Controlador de Caché Asociativa por Conjuntos
+# cache-controller
 
-**Configuración:** 4 conjuntos, 2 vías por conjunto, reemplazo LRU, política Write-Back con Write-Allocate.
+**L1:** 4 conjuntos × 2 vías · LRU · Write-Back / Write-Allocate · tag=12b  
+**L2:** 8 conjuntos × 2 vías · LRU · Write-Back / Write-Allocate · tag=11b  
+**RAM:** 4096 bytes, direccionamiento `u16`
 
-Este documento describe el diseño completo del subsistema de memoria: la estructura física de la caché, el algoritmo de decodificación de direcciones, el flujo de decisión ante hit/miss, y las decisiones de arquitectura tomadas (con su justificación) para el simulador de jerarquía de memoria del proyecto `arquitectura-cpu-rust`.
+Este documento describe el diseño completo del subsistema de memoria de dos niveles: estructura física de cada caché, esquemas de bits de dirección (uno por nivel), flujo de decisión ante hit/miss, write-back en cadena y las decisiones de arquitectura tomadas (con su justificación) para el simulador del proyecto `arquitectura-cpu-rust`.
 
 ---
 
 ## 1. Contexto y Objetivo
 
-Simulamos una memoria RAM de 256 bytes intermediada por una caché asociativa por conjuntos de 2 vías. El objetivo es demostrar, con datos reales y medibles, por qué la localidad de referencia (temporal y espacial) hace que una caché pequeña acelere drásticamente el acceso a una memoria más grande y lenta — y por qué la política de escritura elegida (Write-Back) reduce el tráfico hacia la RAM frente a la alternativa (Write-Through).
+Simulamos una memoria RAM de 4096 bytes intermediada por **dos niveles de caché** asociativa por conjuntos (2 vías cada uno). El objetivo es demostrar, con datos reales y medibles, por qué la localidad de referencia hace que cachés pequeñas aceleren drásticamente los accesos, y por qué la política Write-Back reduce el tráfico hacia la RAM frente a Write-Through.
 
-## 2. Decodificación de Direcciones (8 bits)
+---
 
-Cada dirección de memoria se descompone en tres campos:
+## 2. Decodificación de Direcciones (16 bits)
+
+Cada nivel tiene su **propio esquema de bits** — los anchos son distintos porque L2 tiene el doble de conjuntos que L1.
+
+### 2.1 L1 — `ControladorMemoria`
 
 ```
-+------------+-------------+---------------+
-| Tag (4b)   | Index (2b)  | Offset (2b)   |
-+------------+-------------+---------------+
-| Bit 7...4  | Bit 3...2   | Bit 1...0     |
-+------------+-------------+---------------+
++-------------+-------------+---------------+
+| Tag (12b)   | Index (2b)  | Offset (2b)   |
++-------------+-------------+---------------+
+| Bit 15...4  | Bit 3...2   | Bit 1...0     |
++-------------+-------------+---------------+
 ```
 
-| Campo | Bits | Tamaño | Propósito |
-|---|---|---|---|
-| **Offset** | 1-0 | 2 bits → 4 valores | Posición del byte dentro de un bloque de 4 bytes (`2² = 4`) |
-| **Index** | 3-2 | 2 bits → 4 valores | Selecciona a cuál de los 4 conjuntos mapea la dirección (`2² = 4`) |
-| **Tag** | 7-4 | 4 bits | Identifica de forma única qué bloque de RAM está cargado en esa línea |
-
-### Fórmulas (máscaras y desplazamientos)
+| Campo | Bits | Propósito |
+|---|---|---|
+| **Offset** | 1-0 | Posición del byte dentro del bloque de 4 bytes |
+| **Index** | 3-2 | Selecciona uno de los **4 conjuntos** |
+| **Tag** | 15-4 | **12 bits** — identifica el bloque en caché |
 
 ```rust
 let offset = (direccion & 0b0000_0011) as usize;
 let indice = ((direccion & 0b0000_1100) >> 2) as usize;
-let tag    = (direccion & 0b1111_0000) >> 4;
-
-// Reconstrucción de la dirección base de un bloque (offset = 0),
-// necesaria para saber a qué dirección de RAM corresponde una línea
-// al momento de desalojarla:
-let direccion_base = (tag << 4) | ((indice as u8) << 2);
+let tag    = (direccion >> 4) & ((1u16 << 12) - 1);
+// Reconstrucción de la dirección base (para write-back al desalojar):
+let dir_base = (tag << 4) | ((indice as u16) << 2);
 ```
 
-### Ejemplo numérico concreto
+**Ejemplo:** `0x005A` → tag=5, index=2, offset=2.
 
-Dirección `0x5A` (`0b0101_1010`):
+### 2.2 L2 — `NivelL2`
 
-| | Binario | Decimal |
+```
++-------------+-----------+----------+
+|  Tag (11b)  | Index (3b)| Offset(2b)|
++-------------+-----------+----------+
+|  Bit 15..5  | Bit 4..2  | Bit 1..0  |
++-------------+-----------+----------+
+```
+
+| Campo | Bits | Propósito |
 |---|---|---|
-| Byte completo | `0101 10 10` | `0x5A` (90) |
-| Tag (bits 7-4) | `0101` | `5` |
-| Index (bits 3-2) | `10` | `2` |
-| Offset (bits 1-0) | `10` | `2` |
+| **Offset** | 1-0 | Posición del byte dentro del bloque de 4 bytes (igual que L1) |
+| **Index** | 4-2 | Selecciona uno de los **8 conjuntos** |
+| **Tag** | 15-5 | **11 bits** — `16 - 3 - 2 = 11` (≠ 12 bits de L1) |
 
-Esta dirección busca en el **Conjunto 2**, el bloque identificado con **Tag 5**, y dentro de ese bloque, el **byte en la posición 2** (tercer byte del bloque de 4).
+```rust
+let offset = (direccion & 0b0000_0000_0000_0011) as usize;
+let indice = ((direccion & 0b0000_0000_0001_1100) >> 2) as usize;
+let tag    = (direccion >> 5) & ((1u16 << 11) - 1);
+// Reconstrucción de la dirección base en L2:
+let dir_base = (tag << 5) | ((indice as u16) << 2);
+```
+
+> **Por qué dos decodificadores distintos:** L2 tiene 3 bits de índice frente a los 2 de L1. Si se usara el mismo decodificador, la mitad del espacio de conjuntos de L2 quedaría inalcanzable.
+
+---
 
 ## 3. Estructura Física de la Caché
+
+### L1 (`ControladorMemoria`) — 32 bytes efectivos
 
 ```
 +-----------+---------------------------------------+---------------------------------------+
@@ -65,45 +85,145 @@ Esta dirección busca en el **Conjunto 2**, el bloque identificado con **Tag 5**
 | Set 2(10) | [V][D][Tag][B0|B1|B2|B3] ultimo_acceso | [V][D][Tag][B0|B1|B2|B3] ultimo_acceso |
 | Set 3(11) | [V][D][Tag][B0|B1|B2|B3] ultimo_acceso | [V][D][Tag][B0|B1|B2|B3] ultimo_acceso |
 +-----------+---------------------------------------+---------------------------------------+
-[V] = Válido (bool)   [D] = Dirty Bit (bool)
+[V] = Válido   [D] = Dirty Bit
 ```
 
-### Tipos de Rust correspondientes
+### L2 (`NivelL2`) — 64 bytes efectivos
+
+```
++-----------+---------------------------------------+---------------------------------------+
+| Set 0(000)| [V][D][Tag][B0|B1|B2|B3] ultimo_acceso | [V][D][Tag][B0|B1|B2|B3] ultimo_acceso |
+| Set 1(001)| ...                                    | ...                                    |
+| ...       |                                        |                                        |
+| Set 7(111)| [V][D][Tag][B0|B1|B2|B3] ultimo_acceso | [V][D][Tag][B0|B1|B2|B3] ultimo_acceso |
++-----------+---------------------------------------+---------------------------------------+
+```
+
+### Tipos de Rust compartidos
 
 ```rust
-const TAMANO_RAM: usize = 256;
+const TAMANO_RAM: usize = 4096;
 const BLOQUE_BYTES: usize = 4;
 const CANTIDAD_CONJUNTOS: usize = 4;
+const CANTIDAD_CONJUNTOS_L2: usize = 8;
 
 pub struct LineaCache {
-    pub tag: u8,
+    pub tag: u16,
     pub valido: bool,
     pub dirty_bit: bool,
     pub datos: [u8; BLOQUE_BYTES],
     pub ultimo_acceso: u64,
 }
+pub struct ConjuntoCache { pub vias: [LineaCache; 2] }
+pub struct EstadisticasCache { pub hits: u64, pub misses: u64, pub desalojos_dirty: u64 }
 
-pub struct ConjuntoCache {
-    pub vias: [LineaCache; 2],
-}
-
-pub struct EstadisticasCache {
-    pub hits: u64,
-    pub misses: u64,
-    pub desalojos_dirty: u64,
-}
-
-pub struct ControladorMemoria {
+pub struct ControladorMemoria {          // L1 (standalone)
     pub ram: [u8; TAMANO_RAM],
     pub cache: [ConjuntoCache; CANTIDAD_CONJUNTOS],
     pub contador_ciclos: u64,
     pub estadisticas: EstadisticasCache,
 }
+
+pub struct NivelL2 {                     // L2 (standalone, sin RAM propia)
+    pub cache: [ConjuntoCache; CANTIDAD_CONJUNTOS_L2],
+    pub contador_ciclos: u64,
+    pub estadisticas: EstadisticasCache,
+}
+
+pub struct JerarquiaCache {              // Orquestador L1 → L2 → RAM
+    pub l1: ControladorMemoria,
+    pub l2: NivelL2,
+    pub ram: [u8; TAMANO_RAM],
+}
 ```
 
-**Nota de diseño:** todo el estado vive en el stack (arrays de tamaño fijo, sin `Vec`), consistente con la restricción `#![no_std]`-style del proyecto — nada de memoria dinámica del heap para simular hardware real.
+**Nota:** todo el estado vive en el stack (arrays de tamaño fijo, sin `Vec`) — coherente con restricciones `#![no_std]`-style, sin heap.
 
-## 4. Algoritmo de Flujo Lógico Completo
+---
+
+## 4. Decisión de Diseño Clave: `NivelL2` sin RAM propia
+
+```rust
+pub fn leer_byte(&mut self, direccion: u16, ram: &mut [u8; TAMANO_RAM]) -> u8
+pub fn escribir_byte(&mut self, direccion: u16, dato: u8, ram: &mut [u8; TAMANO_RAM])
+```
+
+`NivelL2` recibe la RAM como parámetro mutable en cada llamada, sin guardar un campo `ram` propio. Esto permite que `JerarquiaCache` sea el único dueño de la RAM, pasándosela a L2 según la necesite, sin cambiar nada de la lógica interna de L2.
+
+---
+
+## 5. Flujo de Lectura/Escritura en la Jerarquía
+
+```
+leer_byte(dir) sobre JerarquiaCache
+       │
+       ▼
+┌─────────────┐
+│  L1 hit?    │──SÍ──► devolver byte  (actualizar LRU L1, hits L1++)
+└──────┬──────┘
+       NO
+       ▼
+┌─────────────┐
+│  L2 hit?    │──SÍ──► traer bloque L2→L1 (possible desalojo L1 con WB→L2)
+└──────┬──────┘        devolver byte
+       NO
+       ▼
+  traer bloque RAM→L2 (possible desalojo L2 con WB→RAM)
+  traer bloque L2→L1  (possible desalojo L1 con WB→L2)
+  devolver byte
+```
+
+### Write-back en cadena
+
+```
+Desalojo dirty de L1  →  volcado a L2   (NO a RAM directamente)
+Desalojo dirty de L2  →  volcado a RAM
+```
+
+Esto garantiza que la RAM solo recibe escrituras cuando L2 expulsa una línea sucia — nunca por un desalojo de L1.
+
+---
+
+## 6. API Pública
+
+```rust
+// ── L1 standalone ──────────────────────────────────────────────────────────
+impl ControladorMemoria {
+    pub fn nuevo() -> Self;
+    pub fn decodificar_direccion(&self, dir: u16) -> (u16, usize, usize); // tag/12b, idx/2b, off/2b
+    pub fn reconstruir_direccion_base(&self, tag: u16, indice: usize) -> u16;
+    pub fn buscar_via_hit(&self, indice: usize, tag: u16) -> Option<usize>;
+    pub fn leer_byte(&mut self, dir: u16) -> u8;
+    pub fn escribir_byte(&mut self, dir: u16, dato: u8);
+    pub fn flush(&mut self);   // vuelca dirty bits a RAM sin invalidar
+}
+
+// ── L2 standalone (RAM por parámetro) ──────────────────────────────────────
+impl NivelL2 {
+    pub fn nuevo() -> Self;
+    pub fn decodificar_direccion(&self, dir: u16) -> (u16, usize, usize); // tag/11b, idx/3b, off/2b
+    pub fn buscar_via_hit_l2(&self, indice: usize, tag: u16) -> Option<usize>;
+    pub fn leer_byte(&mut self, dir: u16, ram: &mut [u8; TAMANO_RAM]) -> u8;
+    pub fn escribir_byte(&mut self, dir: u16, dato: u8, ram: &mut [u8; TAMANO_RAM]);
+}
+
+// ── Jerarquía conectada ────────────────────────────────────────────────────
+impl JerarquiaCache {
+    pub fn nuevo() -> Self;
+    pub fn leer_byte(&mut self, dir: u16) -> u8;     // L1→L2→RAM
+    pub fn escribir_byte(&mut self, dir: u16, dato: u8);
+    pub fn flush(&mut self);   // L1→L2 y luego L2→RAM
+}
+
+// ── Estadísticas ───────────────────────────────────────────────────────────
+impl EstadisticasCache {
+    pub fn tasa_de_aciertos(&self) -> f64;   // hits / (hits + misses)
+}
+```
+
+---
+
+## 7. Algoritmo de Flujo Completo (por nivel)
 
 ```
                       ┌──────────────────────────────┐
@@ -112,166 +232,65 @@ pub struct ControladorMemoria {
                                      │
                                      ▼
                       ┌──────────────────────────────┐
-                      │    contador_ciclos += 1      │  ◄── garantiza marcas temporales únicas
+                      │    contador_ciclos += 1      │
                       └──────────────┬───────────────┘
                                      │
                                      ▼
                       ┌──────────────────────────────┐
-                      │ Recibir Dirección (8 bits)   │
-                      └──────────────┬───────────────┘
-                                     │
-                                     ▼
-                      ┌──────────────────────────────┐
-                      │    Decodificar Dirección     │ ──► Extrae: Tag, Index, Offset
-                      └──────────────┬───────────────┘
-                                     │
-                                     ▼
-                      ┌──────────────────────────────┐
-                      │ Buscar en Conjunto [Index]   │
+                      │    Decodificar Dirección     │ ──► Tag / Index / Offset
+                      │  (L1: 12/2/2 · L2: 11/3/2)  │     (cada nivel: su fn)
                       └──────────────┬───────────────┘
                                      │
                        ¿Vía válida con mismo Tag?
                                      │
-                      ┌──────────────┴──────────────┐
-                     SÍ                            NO
+                      ┌─────────────┴──────────────┐
+                     SÍ → HIT                     NO → MISS
                       │                             │
-                      ▼                             ▼
-              ┌─────────────┐               ┌─────────────┐
-              │   ¡HIT!     │               │   ¡MISS!    │
-              └──────┬──────┘               └──────┬──────┘
-                     │                             │
-                     ▼                             ▼
-       ┌───────────────────────────┐ ┌───────────────────────────┐
-       │  estadisticas.hits += 1   │ │ estadisticas.misses += 1  │
-       └─────────────┬─────────────┘ └─────────────┬─────────────┘
-                     │                             │
-                     │                             ▼
-                     │              ┌─────────────────────────────┐
-                     │              │    llamar manejar_miss()    │
-                     │              └──────────────┬──────────────┘
-                     │                             │
-                     │                             ▼
-                     │              ┌─────────────────────────────┐
-                     │              │ 1. ELEGIR VÍCTIMA (LRU):    │
-                     │              │  • ¿Vía 0 libre? ──► Vía 0  │
-                     │              │  • ¿Vía 1 libre? ──► Vía 1  │
-                     │              │  • ¿Ambas ocupadas?         │
-                     │              │    ──► Menor ultimo_acceso  │
-                     │              └──────────────┬──────────────┘
-                     │                             │
-                     │                             ▼
-                     │               ¿La vía víctima tiene
-                     │             valido==true Y dirty==true?
-                     │                             │
-                     │              ┌──────────────┴──────────────┐
-                     │             SÍ                            NO
-                     │              │                             │
-                     │              ▼                             ▼
-                     │      ┌──────────────┐              ┌──────────────┐
-                     │      │   DESALOJO   │              │  DESCARTAR   │
-                     │      │  WRITE-BACK  │              │    LÍNEA     │
-                     │      │ •Reconstruir │              │ (no escribe  │
-                     │      │  dir. vieja  │              │   en RAM)    │
-                     │      │  con el TAG  │              └──────┬───────┘
-                     │      │  VIEJO de la │                     │
-                     │      │  vía víctima │                     │
-                     │      │ •Escribir 4  │                     │
-                     │      │  bytes a RAM │                     │
-                     │      │ •desalojos_  │                     │
-                     │      │  dirty += 1  │                     │
-                     │      └──────┬───────┘                     │
-                     │             │                             │
-                     │             └──────────────┬──────────────┘
-                     │                            │
-                     │                            ▼
-                     │              ┌─────────────────────────────┐
-                     │              │     TRAER NUEVO BLOQUE      │
-                     │              │ • Leer 4 bytes desde RAM    │
-                     │              │   (dirección base NUEVA)    │
-                     │              │ • Actualizar tag = nuevo_tag│
-                     │              │ • valido=true, dirty=false  │
-                     │              └──────────────┬──────────────┘
-                     │                             │
-                     │                             ▼ (retorna índice de vía)
-                     └─────────────────────┬───────┘
-                                           │
-                                           ▼
-                      ┌──────────────────────────────────────────┐
-                      │        Actualizar último acceso          │
-                      │  ──► via.ultimo_acceso = contador_ciclos │
-                      └────────────────────┬─────────────────────┘
-                                           │
-                                  ¿Qué operación es?
-                                           │
-                      ┌────────────────────┴─────────────────────┐
-                   LECTURA                                   ESCRITURA
-                      │                                          │
-                      ▼                                          ▼
-       ┌─────────────────────────────┐            ┌─────────────────────────────┐
-       │        DEVOLVER BYTE        │            │       MODIFICAR BYTE        │
-       │  Retorna datos[offset]      │            │  • datos[offset] = dato     │
-       │                             │            │  • dirty_bit = true         │
-       └─────────────────────────────┘            └─────────────────────────────┘
+              hits++, LRU update           misses++, manejar_miss()
+              devolver byte                   │
+                                              ▼
+                                    ┌──────────────────┐
+                                    │ Elegir víctima   │
+                                    │ (libre > LRU)    │
+                                    └────────┬─────────┘
+                                             │
+                              ¿Víctima dirty?
+                                             │
+                              SÍ  →  Write-back   NO  →  Descartar
+                              (L1→L2, L2→RAM)
+                                             │
+                                    ┌────────▼─────────┐
+                                    │ Traer nuevo      │
+                                    │ bloque (4 bytes) │
+                                    │ valido=true      │
+                                    │ dirty=false      │
+                                    └────────┬─────────┘
+                                             │
+                                    devolver byte / escribir dato
 ```
 
-## 5. Decisiones de Diseño y su Justificación
+---
 
-### 5.1 Write-Back en vez de Write-Through
+## 8. Suite de Tests
 
-Con **Write-Back**, una escritura solo modifica la caché (marcando `dirty_bit = true`); el dato se propaga a la RAM únicamente cuando la línea se desaloja (o se sincroniza explícitamente con `flush()`). Con **Write-Through**, cada escritura iría inmediatamente tanto a la caché como a la RAM.
-
-**Por qué elegimos Write-Back:** porque reduce drásticamente el tráfico hacia la RAM en programas con múltiples escrituras sobre la misma dirección en un período corto (ej. un contador que se incrementa en un loop) — cada incremento intermedio nunca llega a tocar la RAM, solo el valor final, en el momento del desalojo.
-
-**Costo aceptado:** si el sistema pierde energía o crashea con líneas `dirty` sin sincronizar, esos datos se pierden. Es el trade-off clásico velocidad-vs-durabilidad — el mismo motivo por el que sistemas de archivos reales usan *journaling* o *fsync* explícitos en puntos críticos (nuestro equivalente es `flush()`).
-
-### 5.2 Write-Allocate: un miss de escritura también trae el bloque a caché
-
-Cuando `escribir_byte` falla (miss), en vez de escribir directo en la RAM y no cachear nada, **traemos el bloque completo a la caché** (mismo camino que un miss de lectura) y luego escribimos sobre la copia en caché.
-
-**Por qué:** asumimos localidad espacial — si el programa está escribiendo en una dirección, es probable que vuelva a leer o escribir cerca de ahí pronto (ej: llenar un array). La alternativa (*no-write-allocate*) tendría más sentido si el patrón de acceso fuera predominantemente "escribir una vez y nunca releer" (ej: un buffer de log de solo escritura) — ahí cachear el bloque sería desperdiciar una línea de caché para un dato que no se va a reutilizar.
-
-### 5.3 Regla de Desempate del LRU: vía libre siempre gana
-
-Ante un miss, si **alguna** vía del conjunto tiene `valido == false`, esa se usa **siempre**, sin comparar `ultimo_acceso` — incluso si la otra vía, ocupada, tiene un `ultimo_acceso` numéricamente menor (lo que la haría parecer "más vieja" si se comparara ciegamente).
-
-**Por qué:** no tiene sentido desalojar una línea con datos útiles cuando hay espacio libre sin usar en el mismo conjunto. Comparar `ultimo_acceso` solo es necesario cuando **ambas** vías están ocupadas y hay que decidir cuál sacrificar.
-
-**Desempate secundario (vía libre vs. vía libre):** si ambas vías de un conjunto están libres simultáneamente (caché recién inicializada), se prefiere la Vía 0 por convención de orden de evaluación — decisión arbitraria pero consciente y documentada en el código, no un accidente del `if`.
-
-### 5.4 Momento exacto del incremento de `contador_ciclos`
-
-`contador_ciclos` se incrementa **antes** de cualquier otra operación de la llamada (primer paso del diagrama), y `ultimo_acceso` se asigna usando ese valor ya incrementado. Esto garantiza que cada acceso tenga una marca temporal estrictamente distinta al anterior — crítico para que el desempate LRU sea determinístico en los tests (dos accesos consecutivos nunca pueden terminar con el mismo `ultimo_acceso`).
-
-## 6. API Pública
-
-```rust
-impl ControladorMemoria {
-    pub fn nuevo() -> Self;
-
-    pub fn decodificar_direccion(&self, direccion: u8) -> (u8, usize, usize); // (tag, indice, offset)
-    pub fn reconstruir_direccion_base(&self, tag: u8, indice: usize) -> u8;
-
-    pub fn leer_byte(&mut self, direccion: u8) -> u8;
-    pub fn escribir_byte(&mut self, direccion: u8, dato: u8);
-
-    /// Sincroniza todas las líneas dirty a RAM sin invalidarlas (Tarea 3.1).
-    pub fn flush(&mut self);
-}
-
-impl EstadisticasCache {
-    pub fn tasa_de_aciertos(&self) -> f64; // hits / (hits + misses)
-}
+```bash
+cargo test --package cache-controller
 ```
 
-## 7. Tests
-
-El crate cuenta con **15 tests** en `src/tests.rs`, verificados de punta a punta (`rustc --test` sobre el código real):
+**Resultado: `22 passed; 0 failed`**
 
 ```
-running 15 tests
+running 22 tests
 test tests::test_controlador_nuevo ... ok
 test tests::test_decodificar_direccion ... ok
+test tests::test_decodificar_direccion_u16_offsets_e_indice_correctos ... ok
+test tests::test_desalojo_dirty_de_l1_escribe_en_l2_no_en_ram ... ok
 test tests::test_flush_sincroniza_sin_invalidar ... ok
+test tests::test_l1_hit_no_consulta_l2 ... ok
+test tests::test_l1_miss_l2_hit_trae_bloque_a_l1 ... ok
+test tests::test_l1_miss_l2_miss_trae_desde_ram ... ok
+test tests::test_l2_hit_no_consulta_ram ... ok
+test tests::test_l2_miss_trae_bloque_de_ram ... ok
 test tests::test_lru_desaloja_la_correcta ... ok
 test tests::test_miss_con_via_dirty_hace_writeback ... ok
 test tests::test_miss_con_via_valida_limpia_no_hace_writeback ... ok
@@ -284,38 +303,66 @@ test tests::test_tasa_de_aciertos ... ok
 test tests::test_via_victima_con_via_invalida ... ok
 test tests::test_via_victima_lru ... ok
 test tests::test_write_back_al_desalojar ... ok
-
-test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 | Categoría | Tests | Qué verifican |
 |---|---|---|
-| **Unitarios internos ("caja blanca")** | 8 | `decodificar_direccion`, `reconstruir_direccion_base`, `elegir_via_victima` (LRU y vía libre), `manejar_miss` (carga simple, desalojo limpio, desalojo dirty) llamados directamente, sin pasar por `leer_byte`/`escribir_byte` |
-| **Obligatorios (API pública)** | 6 | `test_miss_luego_hit`, `test_write_back_al_desalojar`, `test_lru_desaloja_la_correcta`, `test_offset_correcto`, `test_preferencia_via_libre_sobre_lru`, `test_tasa_de_aciertos` |
-| **Extensión (Tarea 3.1)** | 1 | `test_flush_sincroniza_sin_invalidar` |
+| **Unitarios L1 (caja blanca)** | 8 | `decodificar_direccion`, `reconstruir_direccion_base`, LRU, `manejar_miss` (carga, desalojo limpio, desalojo dirty) |
+| **API pública L1** | 6 | Miss→Hit, write-back al desalojar, LRU correcto, offset, preferencia vía libre, tasa de aciertos |
+| **Extensión L1 (`flush`)** | 1 | `test_flush_sincroniza_sin_invalidar` |
+| **Migración de tipo u16** | 1 | `test_decodificar_direccion_u16_offsets_e_indice_correctos` |
+| **L2 standalone** | 2 | Hit no consulta RAM · Miss trae bloque de RAM |
+| **Jerarquía conectada** | 4 | L1 hit no consulta L2 · MISS L1 HIT L2 trae a L1 · MISS L1 MISS L2 desde RAM · desalojo dirty L1→L2 (no RAM) |
 
-Correr la suite:
-```bash
-cargo test --package cache-controller
-```
+---
 
+## 9. Decisiones de Diseño y su Justificación
 
-## 8. Errores Comunes al Implementar (Gotchas)
+### 9.1 Write-Back en vez de Write-Through
 
-- **Reconstruir la dirección con el tag equivocado:** al desalojar una línea dirty, hay que usar el **tag viejo de la vía víctima** (el que tenía antes de sobreescribirse), nunca el tag de la nueva dirección entrante — son direcciones distintas por definición (si fueran la misma, habría sido un hit, no un miss).
-- **Olvidar los contadores de `hits`/`misses`:** son fáciles de pasar por alto porque no afectan el resultado funcional de `leer_byte`/`escribir_byte`, solo rompen `tasa_de_aciertos()` — y el error no se nota hasta correr ese test específico.
-- **Escribir directamente a `self.ram` desde `escribir_byte`:** rompe por completo la semántica de Write-Back. La única función que debe tocar `self.ram` en una escritura es la lógica de desalojo dentro de `manejar_miss` (o `flush`).
+Con **Write-Back**, una escritura solo modifica la caché (`dirty_bit = true`); el dato se propaga a la RAM únicamente al desalojar. Reduce drásticamente el tráfico en patrones de múltiples escrituras sobre la misma dirección.
 
-## 9. Estructura de Archivos de este Crate
+**Costo aceptado:** datos sin sincronizar pueden perderse si el sistema falla. Equivalente a *journaling* / *fsync* en sistemas de archivos — nuestro `flush()` cumple esa función.
+
+### 9.2 Write-Allocate
+
+Un miss de escritura trae el bloque completo a caché antes de modificarlo. Asume localidad espacial — si el programa escribe en una dirección, probablemente vuelva a leer/escribir cerca.
+
+### 9.3 LRU: vía libre siempre gana
+
+Si alguna vía del conjunto tiene `valido == false`, se usa directamente sin comparar `ultimo_acceso`. Comparar LRU solo aplica cuando **ambas** vías están ocupadas. Desempate (ambas libres): vía 0 por convención.
+
+### 9.4 Write-back en cadena L1 → L2 → RAM
+
+Un desalojo dirty de L1 se vuelca a L2 (no a RAM). Solo si ese volcado a su vez provoca un desalojo dirty en L2, ese bloque llega a RAM. Esta cadena garantiza que la RAM siempre recibe la versión más reciente de los datos, independientemente de cuántas escrituras intermedias hubo.
+
+### 9.5 `contador_ciclos` incrementa antes de operar
+
+Garantiza marcas temporales estrictamente crecientes entre accesos consecutivos — crítico para que el desempate LRU sea determinístico en los tests.
+
+---
+
+## 10. Errores Comunes al Implementar (Gotchas)
+
+- **Reconstruir la dirección con el tag equivocado:** al desalojar dirty, usar el **tag viejo de la vía víctima**, nunca el de la nueva dirección.
+- **Usar el mismo decodificador para L1 y L2:** los anchos de campo son distintos — cada nivel necesita su propia función.
+- **Dar RAM propia a `NivelL2`:** fuerza a reescribir la firma al integrar la jerarquía. Pasar la RAM por parámetro evita ese trabajo.
+- **Write-back de L1 directo a RAM:** viola la semántica de la jerarquía — L1 debe escribir en L2, no saltear el nivel.
+- **Olvidar los contadores `hits`/`misses`:** no afectan la corrección funcional, pero rompen `tasa_de_aciertos()`.
+
+---
+
+## 11. Estructura de Archivos del Crate
 
 ```
 cache-controller/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs        # re-exports públicos + `mod tests;`
-    ├── storage.rs     # LineaCache, ConjuntoCache, ControladorMemoria (campos),
-    │                  # decodificar_direccion, reconstruir_direccion_base, buscar_via_hit
-    ├── policy.rs      # elegir_via_victima, manejar_miss, EstadisticasCache + tasa_de_aciertos
-    ├── bus.rs         # leer_byte, escribir_byte, flush (API pública de acceso)
-    └── tests.rs       # 15 tests (`#[cfg(test)] mod tests;` declarado en lib.rs)
+    ├── lib.rs        # Re-exports públicos: ControladorMemoria, NivelL2, JerarquiaCache, …
+    ├── storage.rs    # Structs, constantes, constructores, decodificadores, API NivelL2
+    ├── policy.rs     # elegir_via_victima + manejar_miss (L1) + tasa_de_aciertos
+    ├── bus.rs        # leer_byte, escribir_byte, flush (API pública L1 standalone)
+    ├── hierarchy.rs  # JerarquiaCache: orquestador L1→L2→RAM, write-back en cadena
+    ├── main.rs       # Demo interactivo: 6 demos (L1 y L2 standalone)
+    └── tests.rs      # 22 tests unitarios e integración
 ```

@@ -1,22 +1,20 @@
 mod bus;
+mod hierarchy;
 mod policy;
-/// # cache-controller
-///
-/// Simulador de jerarquia de memoria: RAM de 256 bytes intermediada por una cache
-/// asociativa por conjuntos de 4 conjuntos x 2 vias (32 bytes efectivos),
-/// con politica Write-Back / Write-Allocate y reemplazo LRU.
-///
-/// ## Modulos internos
-/// - [storage]: tipos de datos y funciones de decodificacion de direcciones
-/// - [policy]: politica LRU (`elegir_via_victima`) y manejo de miss (`manejar_miss`)
-/// - [bus]: API publica de acceso (`leer_byte`, `escribir_byte`, `flush`)
+
+/// Simulador de jerarquia de memoria con RAM de 4096 bytes intermediada por
+/// dos niveles de cache asociativa por conjuntos bajo politicas Write-Back y LRU.
+/// Incluye L1 de 4 conjuntos por 2 vias y L2 de 8 conjuntos por 2 vias.
+/// Estructurado internamente en modulos para almacenamiento, politicas de desalojo,
+/// operaciones de bus y jerarquia multinivel.
 pub mod storage;
 
-// Re-exports publicos para que los consumidores del crate importen desde la raiz
 pub use storage::{
-    BLOQUE_BYTES, CANTIDAD_CONJUNTOS, ConjuntoCache, ControladorMemoria, EstadisticasCache,
-    LineaCache, TAMANO_RAM,
+    BLOQUE_BYTES, CANTIDAD_CONJUNTOS, CANTIDAD_CONJUNTOS_L2, ConjuntoCache, ControladorMemoria,
+    EstadisticasCache, LineaCache, NivelL2, TAMANO_RAM,
 };
+
+pub use hierarchy::JerarquiaCache;
 
 impl Default for ControladorMemoria {
     fn default() -> Self {
@@ -24,8 +22,5 @@ impl Default for ControladorMemoria {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests;

@@ -6,8 +6,6 @@ use cpu_pipeline::CpuSegmentada;
 use display::reporte_rendimiento;
 use ejemplos::Ejemplo;
 
-// ─── Runner de un ejemplo ─────────────────────────────────────────────────────
-
 fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
     let sep = "=".repeat(60);
     println!("{sep}");
@@ -15,15 +13,11 @@ fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
     println!("  {}", ej.descripcion);
     println!("{sep}\n");
 
-    // Inicializar CPU con los registros del ejemplo.
-    // `..CpuSegmentada::nueva()` rellena el resto del estado con valores de stock:
-    // buffers del pipeline en NOP inactivo, PC en 0, contadores en 0.
     let mut cpu = CpuSegmentada {
         registros: ej.registros_iniciales,
         ..CpuSegmentada::nueva()
     };
 
-    // Inicializar memoria y precargar valores RAM del ejemplo
     let mut memoria = ControladorMemoria::nuevo();
     for &(addr, val) in ej.ram_inicial {
         memoria.ram[addr as usize] = val;
@@ -37,7 +31,7 @@ fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
     }
     println!("\nEjecucion ciclo a ciclo del pipeline:\n");
 
-    // Ejecutar hasta que el programa termine y el pipeline se vacíe por completo
+    // Ejecucion continua hasta terminar el programa y drenar el pipeline
     while cpu.program_counter < programa.len()
         || cpu.if_id.activa
         || cpu.id_ex.activa
@@ -48,13 +42,12 @@ fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
         print!("{}", cpu);
     }
 
-    // Sincronizar caché con RAM al finalizar (write-back de líneas sucias)
+    // Sincronizar cache con RAM al finalizar mediante write-back
     memoria.flush();
 
     println!("{}", reporte_rendimiento(&cpu, &memoria, 100.0));
 }
 
-// ─── Función principal ────────────────────────────────────────────────────────
 fn main() {
     let lista = ejemplos::catalogo();
 

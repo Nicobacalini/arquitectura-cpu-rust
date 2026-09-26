@@ -1,29 +1,21 @@
-//! Catálogo de programas de ejemplo para el simulador integrado.
+//! Catalogo de programas de ejemplo para el simulador integrado.
 //!
-//! Cada ejemplo se define como un [`Ejemplo`] que agrupa:
-//! - Nombre y descripción educativa del fenómeno que demuestra.
-//! - Estado inicial de los registros y de la RAM.
-//! - El programa como `Vec<Instruccion>`.
-//!
-//! Para agregar un nuevo ejemplo basta con:
-//! 1. Escribir una función `fn programa_ejemplo_N() -> Vec<Instruccion>`.
-//! 2. Añadir un `Ejemplo { ... }` al `Vec` retornado por [`catalogo`].
+//! Cada caso agrupa el nombre, la descripcion del fenomeno analizado,
+//! el estado inicial de registros y RAM, y la funcion constructora de instrucciones.
 
 use cpu_pipeline::{Instruccion, Registro};
 
-// ─── Tipo de datos ────────────────────────────────────────────────────────────
-
 /// Metadatos y contenido de un programa de ejemplo.
 pub struct Ejemplo {
-    /// Nombre corto del ejemplo (se muestra en el encabezado).
+    /// Nombre corto del ejemplo mostrado en el encabezado.
     pub nombre: &'static str,
-    /// Descripción educativa del fenómeno principal que demuestra.
+    /// Descripcion educativa del fenomeno principal demostrado.
     pub descripcion: &'static str,
-    /// Valores iniciales de los registros `[R0, R1, R2, R3]`.
+    /// Valores iniciales para el banco de registros R0 a R3.
     pub registros_iniciales: [u16; 4],
-    /// Valores precargados en la RAM antes de ejecutar: lista de `(dirección, valor)`.
+    /// Valores precargados en RAM antes de iniciar la simulacion.
     pub ram_inicial: &'static [(u8, u8)],
-    /// Función que construye el programa de instrucciones.
+    /// Funcion generadora del vector de instrucciones.
     pub programa: fn() -> Vec<Instruccion>,
 }
 
@@ -213,13 +205,7 @@ fn programa_ejemplo_4() -> Vec<Instruccion> {
     ]
 }
 
-// ─── Catálogo público ─────────────────────────────────────────────────────────
-
 /// Retorna todos los ejemplos disponibles en orden de complejidad creciente.
-///
-/// Para agregar un nuevo ejemplo:
-/// 1. Define `fn programa_ejemplo_N() -> Vec<Instruccion>` arriba.
-/// 2. Agrega un `Ejemplo { ... }` al `vec![]` de esta función.
 pub fn catalogo() -> Vec<Ejemplo> {
     vec![
         Ejemplo {
