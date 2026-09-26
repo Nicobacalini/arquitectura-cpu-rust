@@ -1,12 +1,13 @@
-use cache_controller::ControladorMemoria;
+use cache_controller::JerarquiaCache;
 use cpu_pipeline::CpuSegmentada;
 use std::fmt::Write;
 
 /// Genera un reporte formateado con el estado final de la CPU,
-/// las metricas de rendimiento del pipeline y las estadisticas de la cache.
+/// las metricas de rendimiento del pipeline y las estadisticas separadas
+/// de L1 y L2 de la jerarquia de cache.
 pub fn reporte_rendimiento(
     cpu: &CpuSegmentada,
-    mem: &ControladorMemoria,
+    jerarquia: &JerarquiaCache,
     frecuencia_mhz: f64,
 ) -> String {
     let ciclos_totales = cpu.contador_ciclos;
@@ -30,8 +31,23 @@ pub fn reporte_rendimiento(
         0.0
     };
 
-    let total_accesos = mem.estadisticas.hits + mem.estadisticas.misses;
-    let tasa_aciertos = mem.estadisticas.tasa_de_aciertos() * 100.0;
+    // Estadísticas L1 (viven en jerarquia.l1.estadisticas)
+    let l1 = &jerarquia.l1.estadisticas;
+    let total_l1 = l1.hits + l1.misses;
+    let tasa_l1 = if total_l1 > 0 {
+        l1.hits as f64 / total_l1 as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    // Estadísticas L2 (viven en jerarquia.l2.estadisticas)
+    let l2 = &jerarquia.l2.estadisticas;
+    let total_l2 = l2.hits + l2.misses;
+    let tasa_l2 = if total_l2 > 0 {
+        l2.hits as f64 / total_l2 as f64 * 100.0
+    } else {
+        0.0
+    };
 
     let mut out = String::new();
 
@@ -81,36 +97,48 @@ pub fn reporte_rendimiento(
         tiempo_ns / 1_000.0
     );
 
+    // ── Estadísticas L1 ──────────────────────────────────────────────────────
     let _ = writeln!(
         out,
         "\n============================================================"
     );
     let _ = writeln!(
         out,
-        "                    Estadisticas de Cache                   "
+        "                     Estadisticas L1                        "
     );
     let _ = writeln!(
         out,
         "============================================================"
     );
+    let _ = writeln!(out, "  Hits                      : {}", l1.hits);
+    let _ = writeln!(out, "  Misses                    : {}", l1.misses);
+    let _ = writeln!(out, "  Total accesos             : {}", total_l1);
+    let _ = writeln!(out, "  Tasa de aciertos          : {:.2}%", tasa_l1);
+    let _ = writeln!(out, "  Desalojos dirty           : {}", l1.desalojos_dirty);
     let _ = writeln!(
         out,
-        "  Hits                      : {}",
-        mem.estadisticas.hits
+        "  Ciclos de L1              : {}",
+        jerarquia.l1.contador_ciclos
+    );
+
+    // ── Estadísticas L2 ──────────────────────────────────────────────────────
+    let _ = writeln!(
+        out,
+        "\n============================================================"
     );
     let _ = writeln!(
         out,
-        "  Misses                    : {}",
-        mem.estadisticas.misses
+        "                     Estadisticas L2                        "
     );
-    let _ = writeln!(out, "  Total accesos             : {}", total_accesos);
-    let _ = writeln!(out, "  Tasa de aciertos          : {:.2}%", tasa_aciertos);
     let _ = writeln!(
         out,
-        "  Desalojos dirty           : {}",
-        mem.estadisticas.desalojos_dirty
+        "============================================================"
     );
-    let _ = writeln!(out, "  Ciclos de cache           : {}", mem.contador_ciclos);
+    let _ = writeln!(out, "  Hits                      : {}", l2.hits);
+    let _ = writeln!(out, "  Misses                    : {}", l2.misses);
+    let _ = writeln!(out, "  Total accesos             : {}", total_l2);
+    let _ = writeln!(out, "  Tasa de aciertos          : {:.2}%", tasa_l2);
+    let _ = writeln!(out, "  Desalojos dirty           : {}", l2.desalojos_dirty);
     let _ = writeln!(
         out,
         "============================================================\n"
@@ -133,18 +161,26 @@ mod tests {
             ..CpuSegmentada::nueva()
         };
 
-        let mut mem = ControladorMemoria::nuevo();
-        mem.estadisticas.hits = 3;
-        mem.estadisticas.misses = 1;
-        mem.contador_ciclos = 40;
+        let mut jerarquia = JerarquiaCache::nuevo();
+        // Simular 3 hits y 1 miss en L1
+        jerarquia.l1.estadisticas.hits = 3;
+        jerarquia.l1.estadisticas.misses = 1;
+        jerarquia.l1.contador_ciclos = 40;
+        // Simular 1 hit y 1 miss en L2
+        jerarquia.l2.estadisticas.hits = 1;
+        jerarquia.l2.estadisticas.misses = 1;
 
-        let reporte = reporte_rendimiento(&cpu, &mem, 100.0);
+        let reporte = reporte_rendimiento(&cpu, &jerarquia, 100.0);
 
         assert!(reporte.contains("Ciclos totales de CPU     : 10"));
         assert!(reporte.contains("Instrucciones completadas : 5"));
         assert!(reporte.contains("CPI (Ciclos / Instruccion): 2.00"));
         assert!(reporte.contains("IPC (Instrucciones / Ciclo): 0.50"));
         assert!(reporte.contains("Tiempo de ejecucion       : 100.00 ns"));
+        // Verificar secciones separadas de L1 y L2
+        assert!(reporte.contains("Estadisticas L1"));
+        assert!(reporte.contains("Estadisticas L2"));
+        // Verificar datos L1
         assert!(reporte.contains("Hits                      : 3"));
         assert!(reporte.contains("Misses                    : 1"));
         assert!(reporte.contains("Tasa de aciertos          : 75.00%"));

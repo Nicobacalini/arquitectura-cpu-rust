@@ -2,7 +2,7 @@
 /// Toda la logica real vive en lib.rs y es accesible como `cpu_pipeline::*`.
 /// Inicializa una CPU con registros de ejemplo, ejecuta un programa de dos
 /// instrucciones y muestra el estado del pipeline ciclo a ciclo.
-use cache_controller::ControladorMemoria;
+use cache_controller::JerarquiaCache;
 use cpu_pipeline::{CpuSegmentada, Instruccion, Registro};
 
 fn main() {
@@ -26,7 +26,7 @@ fn main() {
         },
     ];
 
-    let mut memoria = ControladorMemoria::nuevo();
+    let mut memoria = JerarquiaCache::nuevo();
 
     println!("=== Demo pipeline cpu-pipeline ===\n");
     for _ in 0..7 {

@@ -1,7 +1,7 @@
 mod display;
 mod ejemplos;
 
-use cache_controller::ControladorMemoria;
+use cache_controller::JerarquiaCache;
 use cpu_pipeline::CpuSegmentada;
 use display::reporte_rendimiento;
 use ejemplos::Ejemplo;
@@ -18,7 +18,7 @@ fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
         ..CpuSegmentada::nueva()
     };
 
-    let mut memoria = ControladorMemoria::nuevo();
+    let mut memoria = JerarquiaCache::nuevo();
     for &(addr, val) in ej.ram_inicial {
         memoria.ram[addr as usize] = val;
     }

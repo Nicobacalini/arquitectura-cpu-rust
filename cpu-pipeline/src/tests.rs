@@ -999,3 +999,77 @@ fn test_forwarding_en_cadena_sin_stalls() {
     assert_eq!(cpu.registros[2], 5, "R2 = R1(5) + R0(0) = 5");
     assert_eq!(cpu.registros[3], 0, "R3 = R2(5) - R1(5) = 0");
 }
+
+// ─── Test de integracion: CPU atraviesa L2 ──────────────────────────────────
+
+/// Ejecuta un programa con LOAD/STORE a mas direcciones de las que caben en L1
+/// (4 conjuntos x 2 vias = 8 lineas) para forzar desalojos de L1 hacia L2.
+/// Confirma que jerarquia.l2.estadisticas.hits + misses > 0, es decir que
+/// la CPU real atraviesa L2 y no solo L1.
+///
+/// Cada direccion tiene paso 0x10 (16 bytes), lo que mapea al mismo indice
+/// L1 con distinto tag. Con mas de 2 accesos al mismo conjunto se produce
+/// un desalojo de L1 que va a L2, garantizando accesos en ese nivel.
+#[test]
+fn test_integracion_cpu_atraviesa_l2() {
+    // Paso 0x10 entre direcciones: mismo indice L1, tags distintos.
+    // Con 10 accesos al mismo conjunto (capacidad 2) se producen desalojos hacia L2.
+
+    // Valores distintos en cada bloque para poder verificar el ultimo LOAD.
+    let mut jerarquia = MemoriaProvisoria::nuevo();
+    let direcciones: [u16; 10] = [
+        0x000, 0x010, 0x020, 0x030, 0x040, 0x050, 0x060, 0x070, 0x080, 0x090,
+    ];
+    for (i, &addr) in direcciones.iter().enumerate() {
+        jerarquia.ram[addr as usize] = (i as u8 + 1) * 10; // 10, 20, 30, ...
+    }
+
+    // Programa: un LOAD seguido de 3 NOPs por cada direccion.
+    // Los NOPs evitan el Load-Use Hazard y simplifican el conteo de ciclos.
+    let mut programa: Vec<Instruccion> = Vec::new();
+    for &addr in &direcciones {
+        programa.push(Instruccion::LOAD {
+            dest: Registro::R1,
+            direccion_ram: addr,
+        });
+        programa.push(Instruccion::NOP);
+        programa.push(Instruccion::NOP);
+        programa.push(Instruccion::NOP);
+    }
+
+    let mut cpu = CpuSegmentada::nueva();
+
+    // Drenar el pipeline por completo
+    while cpu.program_counter < programa.len()
+        || cpu.if_id.activa
+        || cpu.id_ex.activa
+        || cpu.ex_mem.activa
+        || cpu.mem_wb.activa
+    {
+        cpu.ciclo_reloj(&programa, &mut jerarquia);
+    }
+
+    // El ultimo LOAD cargo 0x090 -> 100
+    assert_eq!(
+        cpu.registros[1], 100,
+        "El ultimo LOAD debe haber dejado 100 en R1"
+    );
+
+    // 10 LOADs + 30 NOPs = 40 instrucciones
+    assert_eq!(cpu.instrucciones_completadas, 40);
+
+    // L1 se desbordo, por lo que L2 debio recibir al menos un acceso.
+    let l2_total = jerarquia.l2.estadisticas.hits + jerarquia.l2.estadisticas.misses;
+    assert!(
+        l2_total > 0,
+        "L2 debe haber recibido al menos un acceso; hits={}, misses={}",
+        jerarquia.l2.estadisticas.hits,
+        jerarquia.l2.estadisticas.misses,
+    );
+
+    // L1 debe tener misses por los bloques frios
+    assert!(
+        jerarquia.l1.estadisticas.misses > 0,
+        "L1 debe haber tenido misses al acceder a bloques frios"
+    );
+}

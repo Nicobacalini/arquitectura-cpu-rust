@@ -1,20 +1,18 @@
 use std::fmt;
 
-use cache_controller::ControladorMemoria;
+use cache_controller::JerarquiaCache;
 
 // ─── Memoria ────────────────────────────────────────────────────────────────
-// `ControladorMemoria` (re-exportado desde el crate `cache-controller`) actua
-// como la memoria del pipeline: cada LOAD/STORE pasa por la cache asociativa
-// de 4 conjuntos x 2 vias con politica LRU y Write-Back/Write-Allocate.
-// Se re-exporta aqui para que los binarios que consumen `cpu-pipeline` no
-// necesiten depender de `cache-controller` directamente.
-pub use cache_controller::ControladorMemoria as Memoria;
+// `JerarquiaCache` (re-exportado desde el crate `cache-controller`) actua
+// como la memoria del pipeline: cada LOAD/STORE atraviesa L1 (4 conjuntos
+// x 2 vias) y L2 (8 conjuntos x 2 vias) con politica LRU y Write-Back/
+// Write-Allocate en ambos niveles. Se re-exporta aqui para que los binarios
+// que consumen `cpu-pipeline` no dependan de `cache-controller` directamente.
+pub use cache_controller::JerarquiaCache as Memoria;
 
-/// Alias de compatibilidad: apunta al [`ControladorMemoria`] real del crate
-/// `cache-controller`. Todo codigo existente que use `MemoriaProvisoria`
-/// pasa ahora por la cache asociativa (LRU, Write-Back) en lugar de acceder
-/// directamente a la RAM.
-pub type MemoriaProvisoria = ControladorMemoria;
+/// Alias de compatibilidad hacia [`JerarquiaCache`]. Todo codigo que use
+/// `MemoriaProvisoria` pasa ahora por la jerarquia L1+L2+RAM.
+pub type MemoriaProvisoria = JerarquiaCache;
 
 // ─── ISA ────────────────────────────────────────────────────────────────────
 
@@ -295,7 +293,7 @@ impl CpuSegmentada {
     pub fn ejecutar_mem(
         &self,
         instruccion: RegistroSegmentacion,
-        memoria: &mut ControladorMemoria,
+        memoria: &mut JerarquiaCache,
     ) -> RegistroSegmentacion {
         if !instruccion.activa {
             return instruccion;
@@ -351,7 +349,7 @@ impl CpuSegmentada {
     /// Procesa en orden inverso: primero WB en registros, luego MEM hacia WB,
     /// deteccion de hazards con stalls o flushes por saltos, avance de etapas
     /// desde EX hacia MEM e ID hacia EX, y finalmente busqueda de instruccion en IF.
-    pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut ControladorMemoria) {
+    pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut JerarquiaCache) {
         self.ejecutar_writeback();
 
         let nuevo_mem_wb = self.ejecutar_mem(self.ex_mem, memoria);
