@@ -1,7 +1,7 @@
 mod display;
 mod ejemplos;
 
-use cache_controller::JerarquiaCache;
+use cache_controller::Mmu;
 use cpu_pipeline::CpuSegmentada;
 use display::reporte_rendimiento;
 use ejemplos::Ejemplo;
@@ -18,9 +18,15 @@ fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
         ..CpuSegmentada::nueva()
     };
 
-    let mut memoria = JerarquiaCache::nuevo();
+    let mut mmu = Mmu::nueva();
+    mmu.cambiar_asid(ej.asid);
+
+    // Cargar datos iniciales directamente en la RAM fisica de la jerarquia.
+    // Como son datos previos al arranque del programa, se escriben en RAM directamente
+    // sin pasar por la TLB (los page faults del primer acceso a cada pagina los
+    // mapearan sobre esta RAM cuando la CPU ejecute el LOAD correspondiente).
     for &(addr, val) in ej.ram_inicial {
-        memoria.ram[addr as usize] = val;
+        mmu.jerarquia.ram[addr as usize] = val;
     }
 
     let programa = (ej.programa)();
@@ -38,21 +44,21 @@ fn ejecutar_ejemplo(numero: usize, ej: &Ejemplo) {
         || cpu.ex_mem.activa
         || cpu.mem_wb.activa
     {
-        cpu.ciclo_reloj(&programa, &mut memoria);
+        cpu.ciclo_reloj(&programa, &mut mmu);
         print!("{}", cpu);
     }
 
     // Sincronizar cache con RAM al finalizar mediante write-back
-    memoria.flush();
+    mmu.jerarquia.flush();
 
-    println!("{}", reporte_rendimiento(&cpu, &memoria, 100.0));
+    println!("{}", reporte_rendimiento(&cpu, &mmu, 100.0));
 }
 
 fn main() {
     let lista = ejemplos::catalogo();
 
     println!("{}", "=".repeat(60));
-    println!("     Simulador Integrado: CPU Segmentada + Memoria Cache    ");
+    println!("     Simulador Integrado: CPU Segmentada + MMU + Cache    ");
     println!("{}", "=".repeat(60));
     println!();
     println!("Ejemplos disponibles ({} en total):", lista.len());

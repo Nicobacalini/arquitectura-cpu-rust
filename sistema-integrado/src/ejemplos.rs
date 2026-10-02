@@ -1,7 +1,8 @@
 //! Catalogo de programas de ejemplo para el simulador integrado.
 //!
 //! Cada caso agrupa el nombre, la descripcion del fenomeno analizado,
-//! el estado inicial de registros y RAM, y la funcion constructora de instrucciones.
+//! el estado inicial de registros y RAM, el ASID de proceso, y la funcion
+//! constructora de instrucciones.
 
 use cpu_pipeline::{Instruccion, Registro};
 
@@ -15,6 +16,8 @@ pub struct Ejemplo {
     pub registros_iniciales: [u16; 4],
     /// Valores precargados en RAM antes de iniciar la simulacion.
     pub ram_inicial: &'static [(u8, u8)],
+    /// ASID del proceso simulado. Permite demostrar la separacion de traducciones.
+    pub asid: u32,
     /// Funcion generadora del vector de instrucciones.
     pub programa: fn() -> Vec<Instruccion>,
 }
@@ -205,6 +208,76 @@ fn programa_ejemplo_4() -> Vec<Instruccion> {
     ]
 }
 
+// ─── Ejemplo 5 (Fase 2): Page Fault por acceso a más de 16 páginas distintas ─
+//
+// Fenomeno demostrado:
+//   - Con 16 marcos fisicos y 256 paginas virtuales posibles, al acceder a
+//     direcciones en 17 paginas distintas se producen page faults con reemplazo.
+//   - Cada LOAD a una direccion de pagina N genera un page fault la primera vez
+//     (la pagina no esta presente). A partir del 17mo acceso, la MMU debe desalojar
+//     una pagina existente para hacer lugar (reemplazo LRU).
+//   - El campo `mmu.page_faults` debera ser > 0 al terminar.
+//
+// Direcciones usadas: 0x0000, 0x0100, 0x0200, ..., 0x1000 (17 paginas, VPN 0..16).
+// Resultado: R1 con el ultimo valor leido; mmu.page_faults >= 17.
+
+fn programa_ejemplo_5() -> Vec<Instruccion> {
+    // Accedemos a 17 paginas distintas (VPN 0 a 16)
+    // Para forzar reemplazo: al acceder a la pagina 16, los 16 marcos ya estan ocupados.
+    vec![
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0000 }, // VPN=0
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0100 }, // VPN=1
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0200 }, // VPN=2
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0300 }, // VPN=3
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0400 }, // VPN=4
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0500 }, // VPN=5
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0600 }, // VPN=6
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0700 }, // VPN=7
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0800 }, // VPN=8
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0900 }, // VPN=9
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0A00 }, // VPN=10
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0B00 }, // VPN=11
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0C00 }, // VPN=12
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0D00 }, // VPN=13
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0E00 }, // VPN=14
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x0F00 }, // VPN=15
+        Instruccion::LOAD { dest: Registro::R1, direccion_ram: 0x1000 }, // VPN=16 → reemplazo!
+    ]
+}
+
+// ─── Ejemplo 6 (Fase 2): Demo ASID — traducciones separadas por proceso ───────
+//
+// Fenomeno demostrado:
+//   - Dos "procesos" simulados bajo ASID 0 y ASID 1 respectivamente.
+//   - El Ejemplo 6A se ejecuta bajo ASID 0, escribe en la pagina VPN=1 (0x0100).
+//   - El Ejemplo 6B se ejecuta bajo ASID 1 (cambio de contexto), accede a la
+//     misma pagina virtual VPN=1 (0x0100) — la TLB no mezcla sus traducciones.
+//   - Al volver a ASID 0 y releer 0x0100, se obtiene el valor del proceso A.
+//
+// Este ejemplo se ejecuta directamente desde main (no a traves de ejecutar_ejemplo)
+// para poder cambiar el ASID entre corridas. Aqui se define solo como referencia.
+//
+// Para el catalogo, incluimos solo el programa A como Ejemplo 6 con ASID=0:
+
+fn programa_ejemplo_6() -> Vec<Instruccion> {
+    vec![
+        // Proceso A (ASID=0): escribe 42 en direccion virtual 0x0100 (VPN=1, offset=0)
+        Instruccion::ADD {
+            dest: Registro::R1,
+            src1: Registro::R0,
+            src2: Registro::R0,
+        }, // R1 = 0
+        Instruccion::STORE {
+            src: Registro::R2,  // R2 sera inicializado a 42
+            direccion_ram: 0x0100,
+        },
+        Instruccion::LOAD {
+            dest: Registro::R3,
+            direccion_ram: 0x0100,
+        },
+    ]
+}
+
 /// Retorna todos los ejemplos disponibles en orden de complejidad creciente.
 pub fn catalogo() -> Vec<Ejemplo> {
     vec![
@@ -213,6 +286,7 @@ pub fn catalogo() -> Vec<Ejemplo> {
             descripcion: "Stalls por dependencia de datos (load-use) y reutilizacion de linea de cache.",
             registros_iniciales: [0, 0, 10, 0],
             ram_inicial: &[(0x10, 15)],
+            asid: 0,
             programa: programa_ejemplo_1,
         },
         Ejemplo {
@@ -220,6 +294,7 @@ pub fn catalogo() -> Vec<Ejemplo> {
             descripcion: "Pipeline de solo ALU: forwarding elimina stalls; CPI cercano a 1. Cache sin ejercitar.",
             registros_iniciales: [0, 10, 20, 0],
             ram_inicial: &[],
+            asid: 0,
             programa: programa_ejemplo_2,
         },
         Ejemplo {
@@ -227,6 +302,7 @@ pub fn catalogo() -> Vec<Ejemplo> {
             descripcion: "Flush de 2 instrucciones especulativas; penalizacion de 2 ciclos por JUMP.",
             registros_iniciales: [0, 5, 3, 0],
             ram_inicial: &[],
+            asid: 0,
             programa: programa_ejemplo_3,
         },
         Ejemplo {
@@ -234,7 +310,27 @@ pub fn catalogo() -> Vec<Ejemplo> {
             descripcion: "Hits en el mismo bloque, writes y recargas mostrando politica write-back.",
             registros_iniciales: [0, 0, 0, 0],
             ram_inicial: &[(0x10, 5), (0x11, 8)],
+            asid: 0,
             programa: programa_ejemplo_4,
+        },
+        Ejemplo {
+            nombre: "[Fase 2] Page Faults con reemplazo LRU de marcos fisicos",
+            descripcion: "17 LOADs a 17 paginas distintas: los primeros 16 llenan los marcos fisicos, \
+                          el 17mo fuerza un reemplazo LRU. mmu.page_faults >= 17 al finalizar.",
+            registros_iniciales: [0, 0, 0, 0],
+            ram_inicial: &[],
+            asid: 0,
+            programa: programa_ejemplo_5,
+        },
+        Ejemplo {
+            nombre: "[Fase 2] ASID: separacion de traducciones entre procesos",
+            descripcion: "Proceso A (ASID=0) escribe en VPN=1 y lo vuelve a leer. \
+                          La TLB registra la traduccion bajo ASID 0. \
+                          Un cambio a ASID 1 fuerza un TLB miss en la misma VPN (traducciones separadas).",
+            registros_iniciales: [0, 0, 42, 0],
+            ram_inicial: &[],
+            asid: 0,
+            programa: programa_ejemplo_6,
         },
     ]
 }
