@@ -47,7 +47,7 @@ fn forwarding_no_anticipa_r0() {
 fn test_r0_no_se_modifica_con_load_ni_sub() {
     let mut cpu = cpu_vacia();
     let mut mem = MemoriaProvisoria::new();
-    mem.escribir_byte(0x10, 99);
+    mem.jerarquia.ram[0x10 as usize] = 99;
     cpu.registros[1] = 50;
 
     let programa = vec![
@@ -107,26 +107,29 @@ fn test_forwarding_ex_mem_tiene_prioridad() {
 }
 
 // ─── Tests de Memoria (MemoriaProvisoria) ────────────────────────────────────
+// Nota Fase 2: estos tests acceden a la jerarquía de caché directamente
+// (sin pasar por la MMU) porque testean el comportamiento de L1/L2/RAM,
+// no la traducción de direcciones virtuales.
 
 #[test]
 fn test_memoria_lectura_escritura() {
     let mut mem = MemoriaProvisoria::new();
-    assert_eq!(mem.leer_byte(0x00), 0);
-    assert_eq!(mem.leer_byte(0xFF), 0);
+    assert_eq!(mem.jerarquia.leer_byte(0x00), 0);
+    assert_eq!(mem.jerarquia.leer_byte(0xFF), 0);
 
-    mem.escribir_byte(0x00, 42);
-    mem.escribir_byte(0x42, 128);
-    mem.escribir_byte(0xFF, 255);
+    mem.jerarquia.escribir_byte(0x00, 42);
+    mem.jerarquia.escribir_byte(0x42, 128);
+    mem.jerarquia.escribir_byte(0xFF, 255);
 
-    assert_eq!(mem.leer_byte(0x00), 42);
-    assert_eq!(mem.leer_byte(0x42), 128);
-    assert_eq!(mem.leer_byte(0xFF), 255);
+    assert_eq!(mem.jerarquia.leer_byte(0x00), 42);
+    assert_eq!(mem.jerarquia.leer_byte(0x42), 128);
+    assert_eq!(mem.jerarquia.leer_byte(0xFF), 255);
 }
 
 #[test]
 fn test_memoria_default() {
     let mem = MemoriaProvisoria::default();
-    for b in mem.ram.iter() {
+    for b in mem.jerarquia.ram.iter() {
         assert_eq!(*b, 0);
     }
 }
@@ -328,7 +331,7 @@ fn test_load_y_store_en_memoria() {
         cpu.ciclo_reloj(&programa, &mut mem);
     }
 
-    assert_eq!(mem.leer_byte(0x50), 0xAA);
+    assert_eq!(mem.leer_byte(0x50, cache_controller::TipoAcceso::Lectura).unwrap_or(0), 0xAA);
     assert_eq!(cpu.registros[2], 0xAA);
 }
 
@@ -336,7 +339,7 @@ fn test_load_y_store_en_memoria() {
 fn test_load_use_hazard_con_stall() {
     let mut cpu = cpu_vacia();
     let mut mem = MemoriaProvisoria::new();
-    mem.escribir_byte(0x20, 15);
+    mem.jerarquia.ram[0x20 as usize] = 15;
     cpu.registros[2] = 5;
 
     // I1: LOAD R1, 0x20  (R1 = 15)
@@ -366,7 +369,7 @@ fn test_load_use_hazard_con_stall() {
 fn test_load_use_hazard_con_store() {
     let mut cpu = cpu_vacia();
     let mut mem = MemoriaProvisoria::new();
-    mem.escribir_byte(0x10, 77);
+    mem.jerarquia.ram[0x10 as usize] = 77;
 
     // I1: LOAD R1, 0x10
     // I2: STORE R1, 0x20 (dependencia en STORE src -> Load-Use Stall)
@@ -386,14 +389,14 @@ fn test_load_use_hazard_con_store() {
     }
 
     assert_eq!(cpu.registros[1], 77);
-    assert_eq!(mem.leer_byte(0x20), 77);
+    assert_eq!(mem.leer_byte(0x20, cache_controller::TipoAcceso::Lectura).unwrap_or(0), 77);
 }
 
 #[test]
 fn test_load_use_hazard_con_sub() {
     let mut cpu = cpu_vacia();
     let mut mem = MemoriaProvisoria::new();
-    mem.escribir_byte(0x30, 30);
+    mem.jerarquia.ram[0x30 as usize] = 30;
     cpu.registros[2] = 10;
 
     // I1: LOAD R1, 0x30 (R1 = 30)
@@ -447,7 +450,7 @@ fn test_store_con_forwarding_desde_ex() {
     }
 
     assert_eq!(cpu.registros[3], 25);
-    assert_eq!(mem.leer_byte(0x30), 25);
+    assert_eq!(mem.leer_byte(0x30, cache_controller::TipoAcceso::Lectura).unwrap_or(0), 25);
 }
 
 #[test]
@@ -466,7 +469,7 @@ fn test_store_sin_hazard_usa_banco_de_registros() {
         cpu.ciclo_reloj(&programa, &mut mem);
     }
 
-    assert_eq!(mem.leer_byte(0x60), 0xBB);
+    assert_eq!(mem.leer_byte(0x60, cache_controller::TipoAcceso::Lectura).unwrap_or(0), 0xBB);
 }
 
 // ─── Tests de Control Hazards (JUMP y Branch Flush) ──────────────────────────
@@ -1016,12 +1019,12 @@ fn test_integracion_cpu_atraviesa_l2() {
     // Con 10 accesos al mismo conjunto (capacidad 2) se producen desalojos hacia L2.
 
     // Valores distintos en cada bloque para poder verificar el ultimo LOAD.
-    let mut jerarquia = MemoriaProvisoria::nuevo();
+    let mut jerarquia = MemoriaProvisoria::nueva();
     let direcciones: [u16; 10] = [
         0x000, 0x010, 0x020, 0x030, 0x040, 0x050, 0x060, 0x070, 0x080, 0x090,
     ];
     for (i, &addr) in direcciones.iter().enumerate() {
-        jerarquia.ram[addr as usize] = (i as u8 + 1) * 10; // 10, 20, 30, ...
+        jerarquia.jerarquia.ram[addr as usize] = (i as u8 + 1) * 10; // 10, 20, 30, ...
     }
 
     // Programa: un LOAD seguido de 3 NOPs por cada direccion.
@@ -1059,17 +1062,117 @@ fn test_integracion_cpu_atraviesa_l2() {
     assert_eq!(cpu.instrucciones_completadas, 40);
 
     // L1 se desbordo, por lo que L2 debio recibir al menos un acceso.
-    let l2_total = jerarquia.l2.estadisticas.hits + jerarquia.l2.estadisticas.misses;
+    let l2_total = jerarquia.jerarquia.l2.estadisticas.hits + jerarquia.jerarquia.l2.estadisticas.misses;
     assert!(
         l2_total > 0,
         "L2 debe haber recibido al menos un acceso; hits={}, misses={}",
-        jerarquia.l2.estadisticas.hits,
-        jerarquia.l2.estadisticas.misses,
+        jerarquia.jerarquia.l2.estadisticas.hits,
+        jerarquia.jerarquia.l2.estadisticas.misses,
     );
 
     // L1 debe tener misses por los bloques frios
     assert!(
-        jerarquia.l1.estadisticas.misses > 0,
+        jerarquia.jerarquia.l1.estadisticas.misses > 0,
         "L1 debe haber tenido misses al acceder a bloques frios"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Tests de Fase 2 — Integracion CPU + MMU
+// ═══════════════════════════════════════════════════════════════════════════
+
+use cache_controller::Mmu;
+
+/// Verifica que la CPU genera page faults al acceder a mas de 16 paginas distintas.
+///
+/// Se crea un programa con 17 LOADs a 17 paginas diferentes (VPN 0..16).
+/// Los primeros 16 llenan todos los marcos fisicos disponibles; el 17mo debe
+/// forzar un reemplazo LRU. Al finalizar, mmu.page_faults debe ser >= 17
+/// (uno por cada primera visita a cada pagina).
+#[test]
+fn test_integracion_cpu_dispara_page_fault() {
+    let mut cpu = CpuSegmentada::nueva();
+    let mut mmu = Mmu::nueva();
+
+    // Programa: 17 LOADs a 17 paginas distintas (VPN 0x00 hasta 0x10)
+    let programa: Vec<Instruccion> = (0u16..=16)
+        .map(|vpn| Instruccion::LOAD {
+            dest: Registro::R1,
+            direccion_ram: vpn << 8, // Primer byte de cada pagina virtual
+        })
+        .collect();
+
+    // Ejecutar hasta drenar el pipeline
+    while cpu.program_counter < programa.len()
+        || cpu.if_id.activa
+        || cpu.id_ex.activa
+        || cpu.ex_mem.activa
+        || cpu.mem_wb.activa
+    {
+        cpu.ciclo_reloj(&programa, &mut mmu);
+    }
+
+    // Debe haber al menos 17 page faults (uno por pagina nueva, posiblemente mas
+    // si el reemplazo LRU desaloja una pagina que se vuelve a necesitar)
+    assert!(
+        mmu.page_faults >= 17,
+        "Esperaba >= 17 page faults, obtuve {}",
+        mmu.page_faults
+    );
+
+    // Despues del acceso 17, exactamente 16 marcos deben estar ocupados
+    let ocupados = mmu
+        .page_table
+        .marcos_ocupados
+        .iter()
+        .filter(|x| x.is_some())
+        .count();
+    assert_eq!(
+        ocupados,
+        cache_controller::MARCOS_FISICOS,
+        "Deben haber exactamente {} marcos ocupados",
+        cache_controller::MARCOS_FISICOS
+    );
+}
+
+/// Verifica que cambiar el ASID aísla las traducciones TLB entre "procesos".
+///
+/// Proceso A (ASID=0) accede a VPN=3: genera page fault e instala traduccion en TLB.
+/// Proceso B (ASID=1) accede a la misma VPN=3: debe generar TLB miss (distinto ASID).
+/// Al volver a ASID=0 y acceder a VPN=3: debe ser TLB hit (traduccion de A aun valida).
+#[test]
+fn test_integracion_asid_aislamiento_de_traducciones() {
+    use cache_controller::traducir_direccion;
+
+    let mut mmu = Mmu::nueva();
+
+    // Proceso A (ASID=0): primer acceso a VPN=3 → page fault + instala TLB
+    mmu.asid_actual = 0;
+    traducir_direccion(&mut mmu, 0x0300, &cache_controller::TipoAcceso::Lectura);
+    let hits_a1 = mmu.tlb.hits;
+    let _misses_a1 = mmu.tlb.misses;
+
+    // Segundo acceso de A a VPN=3 → TLB hit
+    traducir_direccion(&mut mmu, 0x0300, &cache_controller::TipoAcceso::Lectura);
+    assert_eq!(mmu.tlb.hits, hits_a1 + 1, "ASID=0 segundo acceso: TLB hit");
+
+    // Proceso B (ASID=1): accede a VPN=3 → TLB miss (no ve traduccion de A)
+    mmu.asid_actual = 1;
+    let misses_antes_b = mmu.tlb.misses;
+    traducir_direccion(&mut mmu, 0x0300, &cache_controller::TipoAcceso::Lectura);
+    assert_eq!(
+        mmu.tlb.misses,
+        misses_antes_b + 1,
+        "ASID=1 no debe encontrar traduccion de ASID=0"
+    );
+
+    // Volver a A (ASID=0): debe volver a ser TLB hit (su traduccion sigue en TLB)
+    mmu.asid_actual = 0;
+    let hits_antes_retorno = mmu.tlb.hits;
+    traducir_direccion(&mut mmu, 0x0300, &cache_controller::TipoAcceso::Lectura);
+    assert_eq!(
+        mmu.tlb.hits,
+        hits_antes_retorno + 1,
+        "ASID=0 al retornar: traduccion previa sigue valida en TLB"
     );
 }

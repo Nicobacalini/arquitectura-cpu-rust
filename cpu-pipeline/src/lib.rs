@@ -1,18 +1,18 @@
 use std::fmt;
 
-use cache_controller::JerarquiaCache;
+use cache_controller::Mmu;
 
 // ─── Memoria ────────────────────────────────────────────────────────────────
-// `JerarquiaCache` (re-exportado desde el crate `cache-controller`) actua
-// como la memoria del pipeline: cada LOAD/STORE atraviesa L1 (4 conjuntos
-// x 2 vias) y L2 (8 conjuntos x 2 vias) con politica LRU y Write-Back/
-// Write-Allocate en ambos niveles. Se re-exporta aqui para que los binarios
-// que consumen `cpu-pipeline` no dependan de `cache-controller` directamente.
-pub use cache_controller::JerarquiaCache as Memoria;
+// `Mmu` (re-exportada desde el crate `cache-controller`) actua como la
+// memoria del pipeline desde la Fase 2: cada LOAD/STORE pasa por TLB →
+// Page Table → L1 (4 conjuntos x 2 vias) → L2 (8 conjuntos x 2 vias) con
+// politica LRU y Write-Back/Write-Allocate. Se re-exporta para que los
+// binarios que consumen `cpu-pipeline` no dependan de `cache-controller`.
+pub use cache_controller::Mmu as Memoria;
 
-/// Alias de compatibilidad hacia [`JerarquiaCache`]. Todo codigo que use
-/// `MemoriaProvisoria` pasa ahora por la jerarquia L1+L2+RAM.
-pub type MemoriaProvisoria = JerarquiaCache;
+/// Alias de compatibilidad. Todo codigo que usaba `MemoriaProvisoria` ahora
+/// pasa por la MMU completa (TLB + Page Table + JerarquiaCache).
+pub type MemoriaProvisoria = Mmu;
 
 // ─── ISA ────────────────────────────────────────────────────────────────────
 
@@ -287,13 +287,17 @@ impl CpuSegmentada {
     }
 
     /// Ejecuta la etapa MEM (Memory) sobre la instruccion almacenada en `instruccion`.
-    /// Para LOAD lee un byte de memoria en la direccion indicada y lo asigna a resultado.
-    /// Para STORE escribe en memoria el valor empaquetado previamente en EX.
+    /// Para LOAD lee un byte de la direccion virtual indicada a traves de la MMU
+    /// (TLB → Page Table → L1/L2/RAM) y lo asigna a resultado.
+    /// Para STORE escribe en la direccion virtual via MMU el valor empaquetado en EX.
     /// Cualquier otra instruccion o buffer inactivo se propaga sin modificaciones.
+    ///
+    /// Si la MMU devuelve page fault o violacion, el resultado del LOAD queda en 0
+    /// (dato neutro) — decision documentada en el README de la Fase 2.
     pub fn ejecutar_mem(
         &self,
         instruccion: RegistroSegmentacion,
-        memoria: &mut JerarquiaCache,
+        memoria: &mut Mmu,
     ) -> RegistroSegmentacion {
         if !instruccion.activa {
             return instruccion;
@@ -301,7 +305,9 @@ impl CpuSegmentada {
 
         match instruccion.instruccion {
             Instruccion::LOAD { direccion_ram, .. } => {
-                let dato = memoria.leer_byte(direccion_ram);
+                let dato = memoria
+                    .leer_byte(direccion_ram, cache_controller::TipoAcceso::Lectura)
+                    .unwrap_or(0);
                 RegistroSegmentacion {
                     resultado: Some(dato as u16),
                     ..instruccion
@@ -349,7 +355,7 @@ impl CpuSegmentada {
     /// Procesa en orden inverso: primero WB en registros, luego MEM hacia WB,
     /// deteccion de hazards con stalls o flushes por saltos, avance de etapas
     /// desde EX hacia MEM e ID hacia EX, y finalmente busqueda de instruccion en IF.
-    pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut JerarquiaCache) {
+    pub fn ciclo_reloj(&mut self, programa: &[Instruccion], memoria: &mut Mmu) {
         self.ejecutar_writeback();
 
         let nuevo_mem_wb = self.ejecutar_mem(self.ex_mem, memoria);

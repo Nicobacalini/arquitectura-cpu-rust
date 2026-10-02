@@ -2,7 +2,7 @@
 /// Toda la logica real vive en lib.rs y es accesible como `cpu_pipeline::*`.
 /// Inicializa una CPU con registros de ejemplo, ejecuta un programa de dos
 /// instrucciones y muestra el estado del pipeline ciclo a ciclo.
-use cache_controller::JerarquiaCache;
+use cache_controller::Mmu;
 use cpu_pipeline::{CpuSegmentada, Instruccion, Registro};
 
 fn main() {
@@ -26,13 +26,14 @@ fn main() {
         },
     ];
 
-    let mut memoria = JerarquiaCache::nuevo();
+    let mut mmu = Mmu::nueva();
 
-    println!("=== Demo pipeline cpu-pipeline ===\n");
+    println!("=== Demo pipeline cpu-pipeline (con MMU) ===\n");
     for _ in 0..7 {
-        cpu.ciclo_reloj(&programa, &mut memoria);
+        cpu.ciclo_reloj(&programa, &mut mmu);
         print!("{}", cpu);
     }
 
     println!("\nRegistros finales: {:?}", cpu.registros);
+    println!("Page faults: {}", mmu.page_faults);
 }
