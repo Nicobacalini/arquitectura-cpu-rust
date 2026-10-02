@@ -9,12 +9,21 @@ mod policy;
 /// operaciones de bus y jerarquia multinivel.
 pub mod storage;
 
+/// Modulo de memoria virtual: TLB, Page Table, ASID y MMU (Fase 2).
+pub mod paginacion;
+
 pub use storage::{
     BLOQUE_BYTES, CANTIDAD_CONJUNTOS, CANTIDAD_CONJUNTOS_L2, ConjuntoCache, ControladorMemoria,
     EstadisticasCache, LineaCache, NivelL2, TAMANO_RAM,
 };
 
 pub use hierarchy::JerarquiaCache;
+
+pub use paginacion::{
+    EntradaPagina, EntradaTlb, Mmu, ResultadoTraduccion, TablaDePaginas, TipoAcceso, Tlb,
+    calcular_amat, descomponer_direccion_virtual, reconstruir_direccion_fisica,
+    traducir_direccion, MARCOS_FISICOS, PAGINAS_VIRTUALES, TAMANO_PAGINA,
+};
 
 impl Default for ControladorMemoria {
     fn default() -> Self {

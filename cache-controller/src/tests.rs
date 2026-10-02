@@ -715,3 +715,220 @@ fn test_desalojo_dirty_de_l1_escribe_en_l2_no_en_ram() {
         "L2 debe tener el dato escrito"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Tests de Fase 2 — Memoria Virtual (TLB, Page Table, ASID, MMU, AMAT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+use crate::paginacion::{
+    Mmu, ResultadoTraduccion, TipoAcceso, Tlb, calcular_amat,
+    descomponer_direccion_virtual, reconstruir_direccion_fisica, traducir_direccion,
+    MARCOS_FISICOS,
+};
+
+// ─── Tarea 1: descomposicion / reconstruccion ────────────────────────────────
+
+#[test]
+fn test_descomponer_direccion_virtual_vpn_y_offset_correctos() {
+    let (vpn, offset) = descomponer_direccion_virtual(0x1234);
+    assert_eq!(vpn, 0x12, "VPN deberia ser 0x12");
+    assert_eq!(offset, 0x34, "Offset deberia ser 0x34");
+
+    let (vpn, offset) = descomponer_direccion_virtual(0x0000);
+    assert_eq!(vpn, 0);
+    assert_eq!(offset, 0);
+
+    let (vpn, offset) = descomponer_direccion_virtual(0xFFFF);
+    assert_eq!(vpn, 0xFF);
+    assert_eq!(offset, 0xFF);
+
+    let dir_fisica = reconstruir_direccion_fisica(3, 0x34);
+    assert_eq!(dir_fisica, 0x0334);
+
+    assert_eq!(reconstruir_direccion_fisica(0, 0), 0x0000);
+    assert_eq!(reconstruir_direccion_fisica(15, 255), 0x0FFF);
+}
+
+// ─── Tarea 2: traduccion Page Table ──────────────────────────────────────────
+
+#[test]
+fn test_traduccion_pagina_presente_sin_pasar_por_tlb() {
+    let mut mmu = Mmu::nueva();
+    mmu.page_table.entradas[5].valida = true;
+    mmu.page_table.entradas[5].presente = true;
+    mmu.page_table.entradas[5].marco_fisico = 3;
+    mmu.page_table.marcos_ocupados[3] = Some(5);
+
+    let resultado = traducir_direccion(&mut mmu, 0x0520, &TipoAcceso::Lectura);
+    match resultado {
+        ResultadoTraduccion::Exitosa { direccion_fisica } => {
+            assert_eq!(direccion_fisica, 0x0320);
+        }
+        otro => panic!("Esperaba Exitosa, obtuve {:?}", otro),
+    }
+
+    assert_eq!(mmu.tlb.hits, 0, "Primer acceso: TLB miss");
+    assert_eq!(mmu.tlb.misses, 1);
+
+    let resultado2 = traducir_direccion(&mut mmu, 0x0537, &TipoAcceso::Lectura);
+    assert!(matches!(resultado2, ResultadoTraduccion::Exitosa { .. }));
+    assert_eq!(mmu.tlb.hits, 1, "Segundo acceso: TLB hit");
+}
+
+#[test]
+fn test_traduccion_pagina_no_presente_dispara_page_fault() {
+    let mut mmu = Mmu::nueva();
+    let resultado = traducir_direccion(&mut mmu, 0x0A00, &TipoAcceso::Lectura);
+    assert!(
+        matches!(resultado, ResultadoTraduccion::PageFault { vpn: 0x0A }),
+        "Esperaba PageFault con VPN=10, obtuve {:?}",
+        resultado
+    );
+    assert_eq!(mmu.page_faults, 1);
+}
+
+#[test]
+fn test_page_fault_con_marco_libre_no_desaloja_nada() {
+    let mut mmu = Mmu::nueva();
+    let resultado = traducir_direccion(&mut mmu, 0x0200, &TipoAcceso::Lectura);
+    assert!(matches!(resultado, ResultadoTraduccion::PageFault { .. }));
+
+    let entrada = &mmu.page_table.entradas[2];
+    assert!(entrada.valida && entrada.presente);
+    let marco = entrada.marco_fisico;
+    assert_eq!(mmu.page_table.marcos_ocupados[marco as usize], Some(2));
+
+    let libres = mmu
+        .page_table
+        .marcos_ocupados
+        .iter()
+        .filter(|x| x.is_none())
+        .count();
+    assert_eq!(libres, 15, "Deben quedar 15 marcos libres");
+}
+
+#[test]
+fn test_page_fault_sin_marcos_libres_desaloja_lru() {
+    let mut mmu = Mmu::nueva();
+
+    for vpn in 0u16..16 {
+        let dir = vpn << 8;
+        traducir_direccion(&mut mmu, dir, &TipoAcceso::Lectura);
+        mmu.contador_ciclos += 10;
+    }
+
+    assert!(mmu.page_table.buscar_marco_libre().is_none(), "Marcos deben estar llenos");
+    let pf_antes = mmu.page_faults;
+
+    traducir_direccion(&mut mmu, 0x1000, &TipoAcceso::Lectura);
+
+    assert_eq!(mmu.page_faults, pf_antes + 1);
+    assert!(!mmu.page_table.entradas[0].presente, "VPN=0 deberia ser desalojada (LRU)");
+    assert!(mmu.page_table.entradas[16].presente, "VPN=16 debe estar presente");
+
+    let ocupados = mmu
+        .page_table
+        .marcos_ocupados
+        .iter()
+        .filter(|x| x.is_some())
+        .count();
+    assert_eq!(ocupados, MARCOS_FISICOS);
+}
+
+#[test]
+fn test_escritura_en_pagina_solo_lectura_devuelve_violacion() {
+    let mut mmu = Mmu::nueva();
+    mmu.page_table.entradas[7].valida = true;
+    mmu.page_table.entradas[7].presente = true;
+    mmu.page_table.entradas[7].marco_fisico = 2;
+    mmu.page_table.entradas[7].solo_lectura = true;
+    mmu.page_table.marcos_ocupados[2] = Some(7);
+
+    let resultado = traducir_direccion(&mut mmu, 0x0700, &TipoAcceso::Escritura);
+    assert!(
+        matches!(
+            resultado,
+            ResultadoTraduccion::ViolacionProteccion { vpn: 7, fue_escritura: true }
+        ),
+        "Esperaba ViolacionProteccion, obtuve {:?}",
+        resultado
+    );
+    assert_eq!(mmu.violaciones_proteccion, 1);
+    assert_eq!(mmu.page_faults, 0);
+
+    let resultado_lectura = traducir_direccion(&mut mmu, 0x0700, &TipoAcceso::Lectura);
+    assert!(matches!(resultado_lectura, ResultadoTraduccion::Exitosa { .. }));
+}
+
+// ─── Tarea 3: TLB con ASID ───────────────────────────────────────────────────
+
+#[test]
+fn test_tlb_hit_requiere_mismo_asid() {
+    let mut tlb = Tlb::nueva(4);
+    tlb.insertar(5, 0, 3, 100);
+
+    let resultado = tlb.buscar(5, 0, 110);
+    assert_eq!(resultado, Some(3), "TLB hit con mismo ASID");
+    assert_eq!(tlb.hits, 1);
+
+    let resultado_otro = tlb.buscar(5, 1, 120);
+    assert_eq!(resultado_otro, None, "TLB miss con ASID distinto");
+    assert_eq!(tlb.misses, 1);
+}
+
+#[test]
+fn test_tlb_miss_con_distinto_asid_mismo_vpn() {
+    let mut mmu = Mmu::nueva();
+    mmu.asid_actual = 0;
+
+    traducir_direccion(&mut mmu, 0x0300, &TipoAcceso::Lectura);
+    assert_eq!(mmu.tlb.misses, 1);
+
+    traducir_direccion(&mut mmu, 0x0300, &TipoAcceso::Lectura);
+    assert_eq!(mmu.tlb.hits, 1, "Segundo acceso mismo ASID: hit");
+
+    mmu.asid_actual = 1;
+    let misses_antes = mmu.tlb.misses;
+    traducir_direccion(&mut mmu, 0x0300, &TipoAcceso::Lectura);
+    assert_eq!(
+        mmu.tlb.misses,
+        misses_antes + 1,
+        "ASID=1 no debe ver traduccion de ASID=0"
+    );
+}
+
+// ─── Tarea 4/5: Mmu integradora ─────────────────────────────────────────────
+
+#[test]
+fn test_mmu_leer_byte_genera_page_fault_y_devuelve_cero() {
+    let mut mmu = Mmu::nueva();
+    let valor = mmu.leer_byte(0x0500, TipoAcceso::Lectura);
+    assert_eq!(valor, Some(0), "Page fault devuelve Some(0)");
+    assert_eq!(mmu.page_faults, 1);
+    assert!(mmu.contador_ciclos >= mmu.penalidad_page_fault as u64);
+}
+
+#[test]
+fn test_mmu_escribir_byte_en_pagina_solo_lectura_devuelve_false() {
+    let mut mmu = Mmu::nueva();
+    mmu.leer_byte(0x0200, TipoAcceso::Lectura);
+    mmu.page_table.entradas[2].solo_lectura = true;
+
+    let ok = mmu.escribir_byte(0x0200, 42);
+    assert!(!ok, "Escribir en pagina RO debe devolver false");
+    assert_eq!(mmu.violaciones_proteccion, 1);
+}
+
+// ─── AMAT extendido ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_amat_incluye_penalidad_de_page_fault() {
+    // AMAT_TLB = 1 + 0.5*(10 + 0.1*1_000_000) = 1 + 0.5*100010 = 50006
+    // AMAT_total = 50006 + 1 = 50007
+    let amat = calcular_amat(1.0, 0.5, 10.0, 0.1, 1_000_000.0, 1.0);
+    assert!(
+        (amat - 50007.0).abs() < 0.01,
+        "AMAT esperado ~50007, obtenido {}",
+        amat
+    );
+}
