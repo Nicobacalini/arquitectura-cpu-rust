@@ -20,8 +20,6 @@ use std::collections::VecDeque;
 
 use crate::hierarchy::JerarquiaCache;
 
-// ─── Constantes de paginacion ─────────────────────────────────────────────────
-
 /// Tamano de pagina en bytes (2^8 = 256). Define los 8 bits de offset.
 pub const TAMANO_PAGINA: usize = 256;
 
@@ -30,8 +28,6 @@ pub const MARCOS_FISICOS: usize = 16;
 
 /// Cantidad de paginas virtuales posibles = 2^8 = 256.
 pub const PAGINAS_VIRTUALES: usize = 256;
-
-// ─── Estructuras de la Page Table ────────────────────────────────────────────
 
 /// Entrada de la tabla de paginas. Una por cada pagina virtual posible (256 entradas).
 #[derive(Debug, Clone)]
@@ -122,8 +118,6 @@ impl TablaDePaginas {
         victima_marco
     }
 }
-
-// ─── TLB ─────────────────────────────────────────────────────────────────────
 
 /// Entrada individual de la TLB.
 #[derive(Debug, Clone)]
@@ -252,8 +246,6 @@ impl Tlb {
     }
 }
 
-// ─── Tipos de acceso y resultado de traduccion ───────────────────────────────
-
 /// Tipo de acceso que se esta realizando a memoria.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipoAcceso {
@@ -271,8 +263,6 @@ pub enum ResultadoTraduccion {
     /// Intento de escritura en una pagina marcada solo_lectura.
     ViolacionProteccion { vpn: u8, fue_escritura: bool },
 }
-
-// ─── Funciones de descomposicion / reconstruccion ────────────────────────────
 
 /// Descompone una direccion virtual de 16 bits en (vpn, offset).
 ///
@@ -292,8 +282,6 @@ pub fn descomponer_direccion_virtual(direccion: u16) -> (u8, u8) {
 pub fn reconstruir_direccion_fisica(marco_fisico: u8, offset: u8) -> u16 {
     ((marco_fisico as u16) << 8) | (offset as u16)
 }
-
-// ─── MMU — Memory Management Unit ────────────────────────────────────────────
 
 /// Unidad de Gestion de Memoria: combina TLB, Page Table y JerarquiaCache.
 ///
@@ -462,7 +450,6 @@ pub fn traducir_direccion(
 ) -> ResultadoTraduccion {
     let (vpn, offset) = descomponer_direccion_virtual(direccion);
 
-    // ── Paso 1: consultar TLB ────────────────────────────────────────────────
     if let Some(marco) = mmu.tlb.buscar(vpn, mmu.asid_actual, mmu.contador_ciclos) {
         // TLB hit: verificar proteccion de escritura
         let solo_lectura = mmu.page_table.entradas[vpn as usize].solo_lectura;
@@ -487,7 +474,6 @@ pub fn traducir_direccion(
         };
     }
 
-    // ── Paso 2: TLB miss → ir a Page Table ──────────────────────────────────
     mmu.contador_ciclos += mmu.penalidad_tlb_miss as u64;
 
     // Leer los campos que necesitamos del borrow inmutable antes de mutar
@@ -563,14 +549,10 @@ pub fn traducir_direccion(
         }
     }
 
-    // Instalar la nueva traduccion en la TLB
     mmu.tlb.insertar(vpn, mmu.asid_actual, marco, mmu.contador_ciclos);
 
-    // Devolver PageFault para que la MMU acumule la penalidad
     ResultadoTraduccion::PageFault { vpn }
 }
-
-// ─── AMAT ────────────────────────────────────────────────────────────────────
 
 /// Calcula el AMAT extendido con TLB, Page Table y la jerarquia L1/L2.
 ///

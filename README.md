@@ -111,21 +111,26 @@ pub struct CpuSegmentada {
 }
 ```
 
-### `pub struct MemoriaProvisoria` / `ControladorMemoria`
-Modela la RAM principal del sistema como un arreglo plano de 4096 bytes (`TAMANO_RAM`), direccionables con un índice de 16 bits (`u16`):
+### `pub struct MemoriaProvisoria` / `Mmu` / `JerarquiaCache`
+El subsistema de memoria está desacoplado en capas ortogonales:
+1. **`Mmu`** (disponible en `cpu-pipeline` bajo el alias `MemoriaProvisoria`): Capa de memoria virtual. Contiene la `Tlb` (8 entradas asociativas) y la `TablaDePaginas` (256 entradas). Traduce direcciones virtuales a direcciones físicas de RAM e intercepta page faults y violaciones de permisos.
+2. **`JerarquiaCache`**: Capa física de memoria intermediada. Orquesta la caché L1 (`ControladorMemoria`), la caché L2 (`NivelL2`) y la memoria principal física (`[u8; TAMANO_RAM]` de 4096 bytes).
+
 ```rust
-pub struct ControladorMemoria {
-    pub ram: [u8; TAMANO_RAM], // 4096 bytes
+pub struct Mmu {
+    pub tlb: Tlb,
+    pub page_table: TablaDePaginas,
+    pub jerarquia: JerarquiaCache,
+    pub asid_actual: u32,
     // ...
 }
 ```
 | Método | Firma | Descripción |
-|--------|-------|-------------|
-| `nuevo()` | `fn nuevo() -> Self` | Inicializa la caché y la RAM con todos los bytes en `0`. |
-| `leer_byte` | `fn leer_byte(&mut self, direccion: u16) -> u8` | Lee el byte en `direccion` pasando por la jerarquía de caché. |
-| `escribir_byte` | `fn escribir_byte(&mut self, direccion: u16, dato: u8)` | Escribe `dato` en `direccion` (Write-Back / Write-Allocate). |
-
-Implementa también `Default`, que es equivalente a llamar `ControladorMemoria::nuevo()` y es la convención idiomática en Rust para tipos con una construcción vacía bien definida.
+|---|---|---|
+| `nueva()` / `default()` | `fn nueva() -> Self` | Inicializa TLB, tabla de páginas, L1, L2 y RAM vacías con valores por defecto. |
+| `leer_byte` | `fn leer_byte(&mut self, dir_virtual: u16, tipo: TipoAcceso) -> Option<u8>` | Traduce la dirección virtual a física y delega a la jerarquía de caché. Reintenta tras resolver un page fault. |
+| `escribir_byte` | `fn escribir_byte(&mut self, dir_virtual: u16, dato: u8) -> bool` | Escribe aplicando Write-Back / Write-Allocate tras traducir. Devuelve `false` ante violación de protección (solo lectura). |
+| `cambiar_asid` | `fn cambiar_asid(&mut self, nuevo_asid: u32)` | Cambia el identificador de espacio de direcciones activo (context switch). |
 
 ---
 
@@ -133,30 +138,30 @@ Implementa también `Default`, que es equivalente a llamar `ControladorMemoria::
 ## 3. Diagrama General de la Arquitectura y Ruta de Datos (Datapath)
 
 ```text
-                                +--------------------------- Camino de WB (Dato escrito) ------------------------------+
-                                |                                                                                       |
-                                v                                                                                       |
-  [ PC ] ---> [ Mem. Prog ] ---> | IF/ID | ---> [ Banco Regs ] ---> | ID/EX | ---> [ MUX ] ---> [  ALU  ] ---> | EX/MEM | ---> [ Caché / RAM ] ---> | MEM/WB | --+
-    ^              |                 |               |                 |             ^           ^                |                |                  |
-    |              v                 |               v                 |             |           |                |                v                  |
-    |         (Instrucción)          |          (Lectura R)            |             |           v                |             (Dato leído)          |
-    |                                |                                 |             |        [ MUX ]             |                                   |
-    |                                |                                 |             |           ^                |                                   |
-    +----[ Hazard Detection Unit ]<--+                                 |             |           |                |                                   |
-    |      - Congela PC              |                                 |             |           |                |                                   |
-    |      - Congela IF/ID           +---------------------------------+             |           |                |                                   |
-    |      - Inserta burbuja (NOP)                                                   |           |                |                                   |
-    +-----> en ID/EX                                                                 |           |                |                                   |
-                                                                                     |           |                |                                   |
-                                             +---------------------------------------+-----------+                |                                   |
-                                             |                                                                    |                                   |
-                                             |                     Unidad de Forwarding                           |                                   |
-                                             |     (Resuelve operandos anticipando desde EX/MEM y MEM/WB)         |                                   |
-                                             +--------------------------------------------------------------------+                                   |
-                                                                 ^                                                                                    |
-                                                                 |------------- Forwarding desde EX/MEM ------------------+                           |
-                                                                 |                                                        |                           |
-                                                                 +------------- Forwarding desde MEM/WB --------------------------------------------+
+                                +--------------------------- Camino de WB (Dato escrito) -----------------------------------------------+
+                                |                                                                                                       |
+                                v                                                                                                       |
+  [ PC ] ---> [ Mem. Prog ] ---> | IF/ID | ---> [ Banco Regs ] ---> | ID/EX | ---> [ MUX ] ---> [  ALU  ] ---> | EX/MEM |                      |
+    ^              |                 |               |                 |             ^           ^                |                         |
+    |              v                 |               v                 |             |           |                v                         |
+    |         (Instrucción)          |          (Lectura R)            |             |           v        [ MMU (TLB / PT) ]                |
+    |                                |                                 |             |        [ MUX ]             | (Dir. física)           |
+    |                                |                                 |             |           ^                v                         |
+    +----[ Hazard Detection Unit ]<--+                                 |             |           |       [ Caché L1/L2/RAM ] ---> | MEM/WB | --+
+    |      - Congela PC              |                                 |             |           |                |                  |
+    |      - Congela IF/ID           +---------------------------------+             |           |                v                  |
+    |      - Inserta burbuja (NOP)                                                   |           |           (Dato leído)            |
+    +-----> en ID/EX                                                                 |           |                                   |
+                                                                                     |           |                                   |
+                                             +---------------------------------------+-----------+                                   |
+                                             |                                                                                       |
+                                             |                     Unidad de Forwarding                                              |
+                                             |     (Resuelve operandos anticipando desde EX/MEM y MEM/WB)                            |
+                                             +---------------------------------------------------------------------------------------+
+                                                                 ^                                                                   |
+                                                                 |------------- Forwarding desde EX/MEM -----------------------------+
+                                                                 |                                                                   |
+                                                                 +------------- Forwarding desde MEM/WB -----------------------------+
 ```
 
 ---
@@ -166,30 +171,33 @@ Implementa también `Default`, que es equivalente a llamar `ControladorMemoria::
 ```text
 arquitectura-cpu-rust/
 ├── Cargo.toml                       # Configuración raíz del Cargo Workspace
-├── README.md                        # Documentación teórica y técnica del sistema
+├── README.md                        # Documentación teórica y técnica global
 │
 ├── cpu-pipeline/                    # Crate: Simulación del pipeline del procesador
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs                   # API pública: MemoriaProvisoria, CpuSegmentada, ISA,
-│       │                            # pipeline, hazard detection, forwarding, Display
-│       └── main.rs                  # Binario de demo: instancia una CPU y corre un programa
-│       └── tests.rs                 # tests de ejemplo importando todo desde cpu_pipeline::*
+│       ├── lib.rs                   # Pipeline segmentado, forwarding, hazard unit, MemoriaProvisoria (= Mmu)
+│       ├── main.rs                  # Demo individual de CPU segmentada
+│       └── tests.rs                 # 42 tests unitarios e integrados (hazards, stalls, MMU/ASID)
 │
-├── cache-controller/
+├── cache-controller/                # Crate: Jerarquía de caché multinivel y memoria virtual
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs                   # Definición de la estructura CacheController
-│       ├── storage.rs               # Representación de líneas, bloques y tags
-│       ├── policy.rs                # Políticas de reemplazo (LRU/FIFO) y escritura
-│       ├── bus.rs                   # Interfaz de bus de memoria y penalizaciones
-│       └── tests.rs                 # tests de ejemplo
-│       └── main.rs                  
-└── sistema-integrado/               # Crate ejecutable: Integración final y driver 
+│       ├── lib.rs                   # Re-exports públicos del controlador de memoria y paginación
+│       ├── storage.rs               # Líneas, bloques, ControladorMemoria (L1) y NivelL2
+│       ├── policy.rs                # Políticas de reemplazo LRU y Write-Back en L1
+│       ├── hierarchy.rs             # JerarquiaCache: orquestador L1 + L2 + RAM
+│       ├── paginacion.rs            # Fase 2: EntradaPagina, TablaDePaginas, Tlb, Mmu, AMAT extendido
+│       ├── bus.rs                   # Operaciones de lectura, escritura y flush de sincronización
+│       ├── main.rs                  # Demo interactiva de la jerarquía de caché
+│       └── tests.rs                 # 33 tests de caché L1/L2, TLB, Page Table y AMAT
+│
+└── sistema-integrado/               # Crate ejecutable: Integración final y suite de benchmarks
     ├── Cargo.toml
     └── src/
-        ├── main.rs                  # Bucle de simulación ciclo a ciclo y reporte final
-        └── display.rs               # Formateador de resultados y métricas de rendimiento (CPI, IPC, tiempo)
+        ├── main.rs                  # Runner que ejecuta los 6 programas de prueba sobre la CPU y MMU
+        ├── ejemplos.rs              # Catálogo de 6 programas didácticos con metadatos y configuración ASID
+        └── display.rs               # Reporte detallado de métricas (CPI, IPC, AMAT extendido, TLB, Caché)
 ```
 
 ---
@@ -197,17 +205,23 @@ arquitectura-cpu-rust/
 ## 5. Cómo Ejecutar el Proyecto
 
 ```bash
-# Compilar y ejecutar el crate cpu-pipeline
+# Ejecutar la simulación completa con los 6 programas y reporte de rendimiento (AMAT, TLB, CPI, IPC):
+cargo run -p sistema-integrado
+
+# Ejecutar la demo interactiva de la jerarquía de caché (L1 + L2 + RAM):
+cargo run -p cache-controller
+
+# Ejecutar la demo de la CPU segmentada:
 cargo run -p cpu-pipeline
 
-# Ejecutar todos los tests del workspace
-cargo test
+# Ejecutar los 77 tests de todo el workspace:
+cargo test --workspace
 
-# Compilar todo el workspace y verificar que no hay errores
+# Compilar todo el workspace y verificar ausencia de advertencias:
 cargo build
 
-# Ver la documentación generada a partir de los doc comments (///)
-cargo doc --open
+# Generar y abrir la documentación web local de todos los crates:
+cargo doc --workspace --open
 ```
 
 ---
@@ -296,15 +310,36 @@ cache-controller/src/paginacion.rs
 
 ### 7.5. Tests de Fase 2
 
-| Test | Qué verifica |
-|---|---|
-| `test_descomponer_direccion_virtual_vpn_y_offset_correctos` | Descomposición VPN/offset y reconstrucción física |
-| `test_traduccion_pagina_presente_sin_pasar_por_tlb` | TLB miss → Page Table hit → éxito; 2do acceso es TLB hit |
-| `test_traduccion_pagina_no_presente_dispara_page_fault` | Dirección sin mapear → PageFault |
-| `test_page_fault_con_marco_libre_no_desaloja_nada` | Page fault con marco libre: 15 quedan libres |
-| `test_page_fault_sin_marcos_libres_desaloja_lru` | 17ma página fuerza reemplazo LRU de VPN=0 |
-| `test_escritura_en_pagina_solo_lectura_devuelve_violacion` | STORE en página RO → ViolacionProteccion; lectura sigue OK |
-| `test_tlb_hit_requiere_mismo_asid` | Hit solo si VPN y ASID coinciden exactamente |
-| `test_tlb_miss_con_distinto_asid_mismo_vpn` | ASID=1 no ve traducción de ASID=0 para la misma VPN |
-| `test_integracion_cpu_dispara_page_fault` | 17 LOADs a 17 páginas → mmu.page_faults ≥ 17 |
-| `test_amat_incluye_penalidad_de_page_fault` | Fórmula AMAT con page fault produce ~50007 ciclos |
+| Test | Crate | Qué verifica |
+|---|---|---|
+| `test_descomponer_direccion_virtual_vpn_y_offset_correctos` | `cache-controller` | Descomposición VPN/offset y reconstrucción física |
+| `test_traduccion_pagina_presente_sin_pasar_por_tlb` | `cache-controller` | TLB miss → Page Table hit → éxito; 2do acceso es TLB hit |
+| `test_traduccion_pagina_no_presente_dispara_page_fault` | `cache-controller` | Dirección sin mapear → PageFault |
+| `test_page_fault_con_marco_libre_no_desaloja_nada` | `cache-controller` | Page fault con marco libre: 15 quedan libres |
+| `test_page_fault_sin_marcos_libres_desaloja_lru` | `cache-controller` | 17ma página fuerza reemplazo LRU de VPN=0 |
+| `test_escritura_en_pagina_solo_lectura_devuelve_violacion` | `cache-controller` | STORE en página RO → ViolacionProteccion; lectura sigue OK |
+| `test_mmu_leer_byte_genera_page_fault_y_devuelve_cero` | `cache-controller` | `leer_byte` maneja PageFault y acumula penalidad en ciclos |
+| `test_mmu_escribir_byte_en_pagina_solo_lectura_devuelve_false` | `cache-controller` | `escribir_byte` deniega escrituras sobre páginas de solo lectura |
+| `test_tlb_hit_requiere_mismo_asid` | `cache-controller` | Hit solo si VPN y ASID coinciden exactamente |
+| `test_tlb_miss_con_distinto_asid_mismo_vpn` | `cache-controller` | ASID=1 no ve traducción de ASID=0 para la misma VPN |
+| `test_amat_incluye_penalidad_de_page_fault` | `cache-controller` / `sistema-integrado` | Fórmula AMAT con page fault produce ~50007 ciclos |
+| `test_integracion_cpu_dispara_page_fault` | `cpu-pipeline` | 17 LOADs a 17 páginas virtuales → `mmu.page_faults >= 17` |
+| `test_integracion_asid_aislamiento_de_traducciones` | `cpu-pipeline` | Procesos con ASID 1 y ASID 2 aislados con la misma dirección virtual |
+
+> **Cobertura total del workspace**: 77 pruebas unitarias y de integración pasando exitosamente (`33` en `cache-controller`, `42` en `cpu-pipeline` y `2` en `sistema-integrado`).
+
+---
+
+## 8. Catálogo de Benchmarks del Sistema Integrado
+
+El crate `sistema-integrado` ejecuta 6 escenarios didácticos que ponen a prueba todas las capas del hardware simulado:
+
+| Programa | Fenómeno Analizado | Componentes Evaluados |
+|---|---|---|
+| **1. Load-Use Hazard + Cache Hit** | Stall de 1 ciclo por lectura pendiente de RAM y posterior acierto en caché al re-leer el bloque. | Hazard Unit + Forwarding + L1 Cache Hit |
+| **2. Aritmética Pura (ALU)** | Operaciones consecutivas `ADD` y `SUB` sin stalls gracias al forwarding completo EX/MEM y MEM/WB. | Forwarding Unit (rendimiento óptimo CPI ≈ 1) |
+| **3. Write-Back y Desalojo Dirty** | Múltiples escrituras y lecturas forzando el desalojo de una línea sucia de L1 hacia L2 y RAM. | Políticas Write-Back y Write-Allocate multinivel |
+| **4. Salto Incondicional (`JUMP`)** | Branch penalty de 2 ciclos con vaciado (*flush*) de instrucciones especulativas en IF/ID e ID/EX. | Control Hazards + Redirección de PC |
+| **5. Memoria Virtual: Page Faults y LRU** | Accesos a más de 16 páginas virtuales forzando desalojo de marcos físicos por LRU e invalidación en TLB. | MMU + Page Table + Reemplazo de marcos LRU |
+| **6. Aislamiento por ASID** | Dos procesos (ASID 1 y ASID 2) escribiendo en la misma dirección virtual `0x0100` sin colisiones de memoria física ni traducciones cruzadas en la TLB. | TLB Tagging con ASID + Separación de procesos |
+

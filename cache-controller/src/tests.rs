@@ -716,17 +716,11 @@ fn test_desalojo_dirty_de_l1_escribe_en_l2_no_en_ram() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Tests de Fase 2 — Memoria Virtual (TLB, Page Table, ASID, MMU, AMAT)
-// ═══════════════════════════════════════════════════════════════════════════
-
 use crate::paginacion::{
     Mmu, ResultadoTraduccion, TipoAcceso, Tlb, calcular_amat,
     descomponer_direccion_virtual, reconstruir_direccion_fisica, traducir_direccion,
     MARCOS_FISICOS,
 };
-
-// ─── Tarea 1: descomposicion / reconstruccion ────────────────────────────────
 
 #[test]
 fn test_descomponer_direccion_virtual_vpn_y_offset_correctos() {
@@ -748,8 +742,6 @@ fn test_descomponer_direccion_virtual_vpn_y_offset_correctos() {
     assert_eq!(reconstruir_direccion_fisica(0, 0), 0x0000);
     assert_eq!(reconstruir_direccion_fisica(15, 255), 0x0FFF);
 }
-
-// ─── Tarea 2: traduccion Page Table ──────────────────────────────────────────
 
 #[test]
 fn test_traduccion_pagina_presente_sin_pasar_por_tlb() {
@@ -860,8 +852,6 @@ fn test_escritura_en_pagina_solo_lectura_devuelve_violacion() {
     assert!(matches!(resultado_lectura, ResultadoTraduccion::Exitosa { .. }));
 }
 
-// ─── Tarea 3: TLB con ASID ───────────────────────────────────────────────────
-
 #[test]
 fn test_tlb_hit_requiere_mismo_asid() {
     let mut tlb = Tlb::nueva(4);
@@ -897,8 +887,6 @@ fn test_tlb_miss_con_distinto_asid_mismo_vpn() {
     );
 }
 
-// ─── Tarea 4/5: Mmu integradora ─────────────────────────────────────────────
-
 #[test]
 fn test_mmu_leer_byte_genera_page_fault_y_devuelve_cero() {
     let mut mmu = Mmu::nueva();
@@ -918,8 +906,6 @@ fn test_mmu_escribir_byte_en_pagina_solo_lectura_devuelve_false() {
     assert!(!ok, "Escribir en pagina RO debe devolver false");
     assert_eq!(mmu.violaciones_proteccion, 1);
 }
-
-// ─── AMAT extendido ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_amat_incluye_penalidad_de_page_fault() {

@@ -414,11 +414,4 @@ La TLB es **totalmente asociativa** (todos los conjuntos en un `Vec`). Un hit re
 
 La separación por ASID garantiza que dos procesos con la misma VPN no compartan traducciones en la TLB, aunque sí puedan estar mapeados a marcos distintos de la misma RAM física.
 
-### 12.5 Archivos actualizados en Fase 2
 
-```
-cache-controller/src/
-├── paginacion.rs  ← NUEVO: TablaDePaginas, Tlb, Mmu, traducir_direccion, calcular_amat
-├── lib.rs         ← Actualizado: re-exports de paginacion
-└── tests.rs       ← Actualizado: 11 tests nuevos de Fase 2
-```

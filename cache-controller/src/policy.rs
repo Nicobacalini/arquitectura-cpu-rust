@@ -27,7 +27,6 @@ impl ControladorMemoria {
     pub fn manejar_miss(&mut self, indice_conjunto: usize, tag: u16) -> usize {
         let via_victima = self.elegir_via_victima(indice_conjunto);
 
-        // Volcado a RAM si la linea victima es valida y contiene datos modificados
         {
             let linea = &self.cache[indice_conjunto].vias[via_victima];
             if linea.valido && linea.dirty_bit {

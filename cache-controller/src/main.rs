@@ -250,7 +250,6 @@ fn main() {
 
     let mut mem = ControladorMemoria::nuevo();
 
-    // Simular array de 16 bytes a partir de 0x20 (tag=2, set=0..3)
     println!("  Inicializando array de 16 bytes en RAM a partir de 0x20...");
     for i in 0u16..16 {
         mem.ram[0x20 + i as usize] = (i * 10) as u8;

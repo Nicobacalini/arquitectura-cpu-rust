@@ -53,7 +53,6 @@ impl JerarquiaCache {
     fn instalar_en_l1(&mut self, tag: u16, indice: usize) -> usize {
         let via_victima = Self::elegir_victima_l1(&self.l1, indice);
 
-        // Desalojo con write-back en cadena hacia L2 si la linea es sucia
         {
             let linea = &self.l1.cache[indice].vias[via_victima];
             if linea.valido && linea.dirty_bit {
