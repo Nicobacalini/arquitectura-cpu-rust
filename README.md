@@ -224,3 +224,87 @@ cargo doc --open
 | Evaluación en reversa en `ciclo_reloj` | Procesar `WB → MEM → EX → ID → IF` garantiza que no se sobreescriban buffers del ciclo anterior antes de leerlos. |
 | `Default` en `MemoriaProvisoria` | Convencion idiomática de Rust para tipos con construcción vacía bien definida. |
 | Tests unitarios | Módulo `#[cfg(test)] mod tests` en `lib.rs`, verificando casos borde de hazards y forwarding (ej: validación de no-anticipación de valores fantasma sobre `R0`). |
+
+---
+
+## 7. Fase 2 — Memoria Virtual (TLB, Page Table, ASID, AMAT Extendido)
+
+### 7.1. Decisiones de Diseño
+
+#### ¿Por qué 256 páginas virtuales y solo 16 marcos físicos no es una limitación?
+
+Con una dirección virtual de 16 bits y páginas de 256 bytes, el espacio virtual tiene 256 páginas posibles (VPN de 8 bits). La RAM física de 4096 bytes dividida en marcos de 256 bytes da exactamente 16 marcos físicos. La desproporción **16 marcos vs. 256 páginas virtuales es el punto central de la memoria virtual**: permite que múltiples procesos (o un proceso grande) presenten un espacio de direcciones más amplio que la memoria física disponible. El hardware (MMU) y el software (OS) colaboran para mantener en RAM solo las páginas actualmente necesarias, intercambiando el resto a disco.
+
+#### ¿Cómo se eligió la política de reemplazo de página, y por qué es el mismo patrón que L1/L2?
+
+Se usó **LRU basado en `ultimo_acceso`** — exactamente el mismo campo y la misma lógica que `elegir_via_victima` en L1 y en L2. Es el mismo problema de fondo: dado un conjunto de slots con capacidad limitada, elegir cuál desalojar cuando llega un elemento nuevo. Al usar el mismo patrón en las 4 capas (TLB, Page Table, L1, L2), el código es predecible y auditable. No es una coincidencia: es una decisión de diseño que muestra cómo el principio de LRU aparece en todos los niveles de la jerarquía de memoria.
+
+#### ¿Qué hace la CPU cuando ocurre un page fault?
+
+Cuando `traducir_direccion` devuelve `PageFault`, la `Mmu` instala la página nueva (o reemplaza una víctima LRU) y **reintenta la traducción**, que ahora tiene éxito. Esto modela el comportamiento real de un OS: luego de resolver el page fault, la instrucción que falló se reintenta automáticamente. El costo en ciclos (`penalidad_page_fault = 1_000_000`) ya quedó acumulado en `contador_ciclos`, haciéndolo visible en el AMAT extendido. Se eligió este comportamiento (reintentar en lugar de devolver 0) porque hace que los tests de integración sean correctos (el dato escrito con STORE sí persiste) y modela con mayor fidelidad el hardware real.
+
+#### ¿Por qué el ASID se modela como un campo externo que cambia el runner?
+
+La CPU simula **un proceso a la vez**. El ASID no forma parte de cada instrucción `LOAD`/`STORE` porque en hardware real tampoco lo está: el ASID es un registro del procesador que el OS actualiza en los cambios de contexto. Modelarlo como `mmu.asid_actual` (que el runner modifica entre corridas) replica ese contrato exacto: el hardware expone el mecanismo, el software (OS/runner) decide cuándo cambiar de proceso.
+
+#### ¿Por qué `Mmu::leer_byte`/`escribir_byte` delegan en `JerarquiaCache`?
+
+Separación de responsabilidades: `JerarquiaCache` resuelve _dónde está el dato_ dada una dirección **física**. `Mmu` resuelve _qué dirección física_ corresponde a una dirección virtual. Las dos responsabilidades son ortogonales. Si la `Mmu` reimplementara la lógica de L1/L2/RAM, cualquier cambio en la política de cache requeriría modificar dos lugares. Al delegar, garantizamos que toda la Fase 1 sigue funcionando sin cambios — los 33 tests de `cache-controller` lo verifican.
+
+### 7.2. Parámetros de la Fase 2
+
+| Parámetro | Valor | Justificación |
+|---|---|---|
+| Tamaño de página | 256 bytes | 8 bits de offset, alineado con dirección virtual de 16 bits |
+| Marcos físicos | 16 | `TAMANO_RAM / TAMANO_PAGINA = 4096 / 256` |
+| Páginas virtuales | 256 | `2^8`, los 8 bits altos de la dirección virtual de 16 bits |
+| Entradas TLB | 8 | Totalmente asociativa, política LRU con `VecDeque<usize>` |
+| `penalidad_tlb_miss` | 10 ciclos | Costo de consultar la Page Table en RAM |
+| `penalidad_page_fault` | 1_000_000 ciclos | ~10 ms a 100 MHz (escala de juguete, pero representa el orden de magnitud real) |
+
+### 7.3. Fórmula AMAT Extendido
+
+```
+AMAT_TLB   = T_TLB + TasaMiss_TLB × (T_PageTable + TasaPageFault × Penalidad_PageFault)
+AMAT_total = AMAT_TLB + AMAT_L1
+
+donde AMAT_L1 = T_L1 + TasaMiss_L1 × (T_L2 + TasaMiss_L2 × T_RAM)
+```
+
+### 7.4. Estructura del módulo `paginacion`
+
+```
+cache-controller/src/paginacion.rs
+├── descomponer_direccion_virtual(u16) → (vpn: u8, offset: u8)
+├── reconstruir_direccion_fisica(marco: u8, offset: u8) → u16
+├── TablaDePaginas { entradas: Vec<EntradaPagina>, marcos_ocupados: [Option<u16>; 16] }
+│   ├── buscar_marco_libre() → Option<u8>
+│   └── elegir_marco_victima() → u8   [LRU]
+├── Tlb { entradas, capacidad, hits, misses, orden_uso: VecDeque<usize> }
+│   ├── buscar(vpn, asid, ciclo) → Option<u8>   [hit si vpn+asid coinciden]
+│   └── insertar(vpn, asid, marco, ciclo)        [LRU eviction si TLB llena]
+├── traducir_direccion(mmu, dir, tipo) → ResultadoTraduccion
+│   ├── TLB hit → Exitosa (sin penalidad)
+│   ├── TLB miss → Page Table lookup (+penalidad_tlb_miss)
+│   │   ├── Página presente → Exitosa + insertar en TLB
+│   │   ├── Escritura RO → ViolacionProteccion
+│   │   └── No presente → PageFault + reemplazo LRU + instalar página
+└── Mmu { tlb, page_table, jerarquia, asid_actual, ... }
+    ├── leer_byte(vaddr, tipo) → Option<u8>   [reintenta tras page fault]
+    └── escribir_byte(vaddr, dato) → bool     [reintenta tras page fault]
+```
+
+### 7.5. Tests de Fase 2
+
+| Test | Qué verifica |
+|---|---|
+| `test_descomponer_direccion_virtual_vpn_y_offset_correctos` | Descomposición VPN/offset y reconstrucción física |
+| `test_traduccion_pagina_presente_sin_pasar_por_tlb` | TLB miss → Page Table hit → éxito; 2do acceso es TLB hit |
+| `test_traduccion_pagina_no_presente_dispara_page_fault` | Dirección sin mapear → PageFault |
+| `test_page_fault_con_marco_libre_no_desaloja_nada` | Page fault con marco libre: 15 quedan libres |
+| `test_page_fault_sin_marcos_libres_desaloja_lru` | 17ma página fuerza reemplazo LRU de VPN=0 |
+| `test_escritura_en_pagina_solo_lectura_devuelve_violacion` | STORE en página RO → ViolacionProteccion; lectura sigue OK |
+| `test_tlb_hit_requiere_mismo_asid` | Hit solo si VPN y ASID coinciden exactamente |
+| `test_tlb_miss_con_distinto_asid_mismo_vpn` | ASID=1 no ve traducción de ASID=0 para la misma VPN |
+| `test_integracion_cpu_dispara_page_fault` | 17 LOADs a 17 páginas → mmu.page_faults ≥ 17 |
+| `test_amat_incluye_penalidad_de_page_fault` | Fórmula AMAT con page fault produce ~50007 ciclos |

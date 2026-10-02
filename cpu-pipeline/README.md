@@ -523,3 +523,28 @@ cargo run --package sistema-integrado
 # Verificar todos los tests del workspace
 cargo test --workspace
 ```
+
+---
+
+## Fase 2 — Integración con MMU
+
+A partir de la Fase 2, la etapa `MEM (ejecutar_mem)` ya **no llama** a `JerarquiaCache` directamente. La firma cambió:
+
+```rust
+// Antes (Fase 1):
+pub fn ejecutar_mem(&self, instruccion: RegistroSegmentacion, memoria: &mut JerarquiaCache)
+
+// Ahora (Fase 2):
+pub fn ejecutar_mem(&self, instruccion: RegistroSegmentacion, memoria: &mut Mmu)
+```
+
+La `Mmu` es transparente para el pipeline: ofrece las mismas operaciones `leer_byte(vaddr, tipo)` y `escribir_byte(vaddr, dato)` pero internamente interpone TLB → Page Table → L1 → L2 → RAM. El pipeline no sabe ni necesita saber que las direcciones que maneja son virtuales.
+
+`MemoriaProvisoria` (alias de compatibilidad) ahora apunta a `Mmu` en lugar de `JerarquiaCache`.
+
+### Tests de integración Fase 2 (en `tests.rs`)
+
+| Test | Fenómeno |
+|---|---|
+| `test_integracion_cpu_dispara_page_fault` | 17 LOADs a 17 páginas → `page_faults ≥ 17` |
+| `test_integracion_asid_aislamiento_de_traducciones` | ASID=0 y ASID=1 no comparten entradas TLB |

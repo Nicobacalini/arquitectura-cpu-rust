@@ -366,3 +366,59 @@ cache-controller/
     ├── main.rs       # Demo interactivo: 6 demos (L1 y L2 standalone)
     └── tests.rs      # 22 tests unitarios e integración
 ```
+---
+
+## 12. Fase 2 — Módulo `paginacion`: MMU con TLB y Page Table
+
+### 12.1 Resumen
+
+El módulo `paginacion.rs` agrega una capa de **traducción de direcciones virtuales** delante de `JerarquiaCache`. La `JerarquiaCache` no se modifica: sigue operando con direcciones físicas exactamente igual que en la Fase 1. Lo nuevo es la `Mmu` que interpone la traducción.
+
+### 12.2 Descomposición de la dirección virtual (16 bits)
+
+```
++---------- VPN (8 bits) ----------+------- OFFSET (8 bits) ------+
+| Bit 15                      Bit 8 | Bit 7                  Bit 0 |
++-----------------------------------+------------------------------+
+
+dir_fisica = (marco_fisico as u16) << 8 | offset as u16
+```
+
+Con `marco_fisico ∈ [0..16)`, `dir_fisica ∈ [0..4096)` siempre — por diseño.
+
+### 12.3 Flujo de traducción
+
+```
+leer_byte(vaddr) / escribir_byte(vaddr, dato)
+  │
+  └─► traducir_direccion(mmu, vaddr, tipo)
+        │
+        ├─ TLB hit (VPN + ASID) ──────────────────► reconstruir_direccion_fisica
+        │                                             └► jerarquia.leer_byte / escribir_byte
+        │
+        └─ TLB miss (+penalidad_tlb_miss)
+              │
+              ├─ Page Table valida+presente
+              │   ├─ Escritura en solo_lectura ──► ViolacionProteccion
+              │   └─ OK ─────────────────────────► insertar TLB + Exitosa
+              │
+              └─ No presente / inválida ──────────► PageFault
+                    ├─ Marco libre → instalar
+                    └─ Sin marcos → desalojar LRU → instalar
+                    (luego reintentar → Exitosa + jerarquia.leer_byte/escribir_byte)
+```
+
+### 12.4 TLB con ASID
+
+La TLB es **totalmente asociativa** (todos los conjuntos en un `Vec`). Un hit requiere que coincidan tanto `vpn` como `asid`. Se usa `VecDeque<usize>` para mantener el orden de uso LRU (índices al Vec de entradas). Al llenarse, se desaloja la entrada al fondo de la cola (la menos recientemente usada).
+
+La separación por ASID garantiza que dos procesos con la misma VPN no compartan traducciones en la TLB, aunque sí puedan estar mapeados a marcos distintos de la misma RAM física.
+
+### 12.5 Archivos actualizados en Fase 2
+
+```
+cache-controller/src/
+├── paginacion.rs  ← NUEVO: TablaDePaginas, Tlb, Mmu, traducir_direccion, calcular_amat
+├── lib.rs         ← Actualizado: re-exports de paginacion
+└── tests.rs       ← Actualizado: 11 tests nuevos de Fase 2
+```

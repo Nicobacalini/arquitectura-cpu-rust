@@ -321,3 +321,20 @@ arquitectura-cpu-rust/
         ├── ejemplos.rs      # Catálogo de programas (struct Ejemplo + catalogo())
         └── main.rs          # Runner: itera catálogo y ejecuta cada ejemplo
 ```
+
+---
+
+## Fase 2 — Runner extendido con MMU, ASID y AMAT
+
+El runner (`main.rs`) ahora crea una `Mmu` en lugar de `JerarquiaCache`. Los datos iniciales se cargan directamente en `mmu.jerarquia.ram[]` (acceso físico antes del arranque del programa). Cada `Ejemplo` tiene un campo `asid: u32` que el runner configura antes de ejecutar.
+
+El reporte (`display.rs`) agrega:
+- **Sección TLB**: hits, misses, tasa de aciertos, page faults, violaciones de protección, ASID actual
+- **AMAT Extendido**: `AMAT_TLB + AMAT_L1` con la fórmula completa
+
+### Ejemplos Fase 2
+
+| Ejemplo | Fenómeno |
+|---|---|
+| 5 — Page Faults con reemplazo LRU | 17 LOADs a 17 páginas distintas. Al 17mo acceso, la MMU desaloja la página LRU para hacer lugar |
+| 6 — ASID: separación de traducciones | Proceso A (ASID=0) escribe en VPN=1; proceso B (ASID=1) lee la misma VPN sin ver la traducción de A |
